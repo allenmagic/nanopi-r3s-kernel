@@ -1,0 +1,15 @@
+# Trim script backups
+*.bak.*
+*.before-olddef.*
+
+# Config snapshots (root only)
+/*.baseline
+/*.base
+
+# Logs
+trim-r3s.log
+*.log
+
+# Generated reports
+TRIM_REPORT.md
+memory/
