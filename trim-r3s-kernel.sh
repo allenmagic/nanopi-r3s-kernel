@@ -1808,7 +1808,9 @@ unset_k RTC_DRV_S35390A
 unset_k RTC_DRV_FM3130
 unset_k RTC_DRV_RX8010
 unset_k RTC_DRV_DS3232_HWMON
-unset_k RTC_DRV_HYM8563
+# RTC_DRV_HYM8563 不可裁！R3S 板载 RTC 芯片就是 HYM8563（DTB: rtc@51 compatible="haoyu,hym8563"），
+# 是设备树指定的 rtc0。砍掉会导致 RTC_HCTOSYS_DEVICE="rtc0" 找不到设备，且 sing-box TLS 校时失败。
+# 历史上已修过一次（见 CLAUDE.md E.0），勿再误砍。
 
 # 字符设备杂项
 unset_k TCG_TPM                  # TPM 安全芯片，R3S 无
@@ -1832,6 +1834,8 @@ set_y MFD_RK8XX_I2C
 set_y REGULATOR_RK808
 set_y RTC_DRV_RK808
 set_y COMMON_CLK_RK808
+# 红线：HYM8563 是 R3S 板载 RTC（DTB rtc@51 / rtc0），强制内置防止误砍
+set_y RTC_DRV_HYM8563
 
 # Thermal（保留 Rockchip thermal，砍其他平台）
 unset_k THERMAL_WRITABLE_TRIPS
