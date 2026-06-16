@@ -115,13 +115,16 @@ When editing trimming logic: the red-line lists encode hard requirements for the
 
 **v2.1 (2026-06-11):** 基于 v2.0 编译产物（973 项）逐类分析，新增 ~50 项裁剪。868(y/m)。
 
-**v2.10 (2026-06-11, current):** MULTIUSER/EFI_PARTITION/IP_MULTICAST 禁用。842→845(y/m)，编译实测 895→879(-16), vmlinuz 10.0→9.0MiB(-9.5%)。
+**v2.10 (2026-06-11, current):** MULTIUSER 禁用。EFI_PARTITION 撤回（Armbian R3S 镜像用 GPT）。842→845(y/m)，编译实测 895→879(-16), vmlinuz 10.0→9.0MiB(-9.5%)。
 
 **v2.10 新增裁剪：**
-- MULTIUSER / EFI_PARTITION / IP_MULTICAST（OpenRC 单用户路由不需）
+- MULTIUSER（OpenRC 单用户路由不需）
+- INIT_STACK_ALL_PATTERN→NONE / RANDOMIZE_BASE+RELOCATABLE / NET_IP_TUNNEL / VDSO_GETRANDOM
 
-**v2.9 新增裁剪：**
-- INIT_STACK_ALL_PATTERN→NONE（栈初始化切换）+ RANDOMIZE_BASE+RELOCATABLE（KASLR）+ NET_IP_TUNNEL（孤儿模块）+ VDSO_GETRANDOM（性能优化）
+**v2.11 (2026-06-16):** 撤回 3 项误裁，修复启动后功能异常
+- **FILE_LOCKING**：unset → set_y，OpenRC 服务管理依赖 fcntl/flock，禁用后无法管理服务
+- **IP_MULTICAST**：撤回禁用，IPv6 NDP 邻居发现依赖组播（v2.10 误裁）
+- **RTC_DRV_HYM8563**：再次撤回，R3S 板载 RTC（DTB rtc@51），砍掉导致 rtc0 缺失、TLS 校时失败
 
 **v2.8 新增裁剪：**
 - LRU_GEN x3（多代LRU）+ PWM_ROCKCHIP x2（R3S DTS无PWM）+ PER_VMA_LOCK（def_bool y）
