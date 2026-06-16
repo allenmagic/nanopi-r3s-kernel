@@ -565,8 +565,9 @@ unset_k RD_LZMA
 	unset_k INET_UDP_DIAG
 	unset_k INET_RAW_DIAG
 
-	# --- R6: FILE_LOCKING（fcntl锁，路由不需要）---
-	unset_k FILE_LOCKING
+	# --- R6: FILE_LOCKING（OpenRC 服务管理必需）---
+	# KEEP: OpenRC 依赖 fcntl/flock 管理服务状态和锁文件
+	set_y FILE_LOCKING
 
 	# --- R7: PROC_CHILDREN（/proc/pid/task/children，调试用）---
 	unset_k PROC_CHILDREN
@@ -1712,8 +1713,7 @@ unset_k MULTIUSER
 # EFI_PARTITION — GPT 分区表（必须保留！Armbian r3s.csc 使用 GPT）
 # IMAGE_PARTITION_TABLE="gpt" → 内核需 GPT 支持才能读取分区表
 
-# IP_MULTICAST — 组播路由（纯单播转发不需）
-unset_k IP_MULTICAST
+# IP_MULTICAST — IPv6/NDP 依赖组播，保留
 
 # =============================================================================
 # Z. 杂项总清扫（GPIO/I2C/SPI/PWM 等保留必要，砍冗余驱动）

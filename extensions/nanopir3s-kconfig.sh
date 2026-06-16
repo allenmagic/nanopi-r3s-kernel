@@ -817,7 +817,6 @@ opts_n+=("NET_IP_TUNNEL")             # 孤儿模块，IPIP/GRE/VTI全禁
 opts_n+=("RANDOMIZE_BASE")            # KASLR，路由器无本地用户不需
 opts_n+=("RELOCATABLE")               # RANDOMIZE_BASE stop 后的级联
 opts_n+=("VDSO_GETRANDOM")            # 纯性能，禁后走syscall
-opts_n+=("IP_MULTICAST")              # 组播路由不需
 opts_n+=("MULTIUSER")                 # OpenRC单用户不需
 	opts_y+=("PREEMPT_VOLUNTARY")
 
