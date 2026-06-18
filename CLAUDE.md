@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository context
 
-This is a standalone toolchain repo designed to be deployed as the `userpatches/` directory inside an Armbian Linux build framework checkout (`armbian/build`; `VERSION` = 26.05.0-trunk). All custom work targets one goal: a minimal, trimmed kernel config for a **NanoPi R3S** router build — pure router role running userspace network tools (sing-box, WireGuard, tailscale, cloudflared/WARP, easytier), no display / wireless / Bluetooth / virtualization / **Docker** / container runtime. Those tools all rely on the kernel `TUN` device (`CONFIG_TUN`, kept in the red line), so trimming must never drop it.
+This is a standalone toolchain repo designed to be deployed as the `userpatches/` directory inside an Armbian Linux build framework checkout (`armbian/build`; `VERSION` = 26.05.0-trunk). All custom work targets one goal: a minimal, trimmed kernel config for a **NanoPi R3S** router build — pure router role running userspace network tools (sing-box, WireGuard, tailscale, cloudflared/WARP, easytier), no display / wireless / Bluetooth / virtualization. By default also cuts Docker/container runtime (optional via `--mode docker` / `--mode full`). Those tools all rely on the kernel `TUN` device (`CONFIG_TUN`, kept in the red line), so trimming must never drop it.
 
-When deployed, this repo's files go into `userpatches/`. When working locally, the repo is self-contained at its own root — scripts reference `userpatches/linux-rockchip64-current.config` as the default config path (which resolves to `./linux-rockchip64-current.config` when the repo is cloned standalone).
+When deployed, this repo's files go into `userpatches/`. When working locally, the repo is self-contained at its own root — the trimming script reads baseline from `samples/` and writes output to `kernel/rockchip64-current/linux-rockchip64-current.config`. The `olddefconfig-r3s.sh` still references `userpatches/linux-rockchip64-current.config` as its default (when deployed inside an Armbian build tree).
 
 ## Commands
 
@@ -140,7 +140,7 @@ When editing trimming logic: the red-line lists encode hard requirements for the
 
 **v2.1 (2026-06-11):** 基于 v2.0 编译产物（973 项）逐类分析，新增 ~50 项裁剪。868(y/m)。
 
-**v2.10 (2026-06-11, current):** MULTIUSER 禁用。EFI_PARTITION 撤回（Armbian R3S 镜像用 GPT）。842→845(y/m)，编译实测 895→879(-16), vmlinuz 10.0→9.0MiB(-9.5%)。
+**v2.10 (2026-06-11):** MULTIUSER 禁用（⚠️ v2.12 撤回）。EFI_PARTITION 撤回（Armbian R3S 镜像用 GPT）。842→845(y/m)，编译实测 895→879(-16), vmlinuz 10.0→9.0MiB(-9.5%)。
 
 **v2.10 新增裁剪：**
 - MULTIUSER（OpenRC 单用户路由不需）
@@ -150,6 +150,17 @@ When editing trimming logic: the red-line lists encode hard requirements for the
 - **FILE_LOCKING**：unset → set_y，OpenRC 服务管理依赖 fcntl/flock，禁用后无法管理服务
 - **IP_MULTICAST**：撤回禁用，IPv6 NDP 邻居发现依赖组播（v2.10 误裁）
 - **RTC_DRV_HYM8563**：再次撤回，R3S 板载 RTC（DTB rtc@51），砍掉导致 rtc0 缺失、TLS 校时失败
+
+**v2.12 (2026-06-17 ~ 2026-06-18, current):** MULTIUSER 撤回 + 项目结构重构 + 裁剪模式
+- **MULTIUSER 撤回**（dda8731）：v2.10 禁用 MULTIUSER 导致 setgroups() syscall 不可用（ENOSYS），chronyd 无法启动，OpenRC start-stop-daemon: unable to set groupid。恢复为 CONFIG_MULTIUSER=y。docker 模式下 MULTIUSER 本身也需要保留（NAMESPACES depends on it）。
+- **项目结构重构**（32320f3）：
+  - 输入：root-level `linux-rockchip64-current.config.baseline` → `samples/linux-rockchip64-current.config.baseline`
+  - 输出：root-level `linux-rockchip64-current.config` → `kernel/rockchip64-current/linux-rockchip64-current.config`
+  - 清理 root 级别遗留 config 文件
+- **裁剪模式 `--mode` 参数**（32320f3）：新增四种模式（见上方"裁剪模式"章节），脚本内用 `ENABLE_DOCKER` / `ENABLE_EBPF` 标志包裹原裁剪块。C 节（容器网络/store）、K 节（BPF 终结者）、M 节（systemd cgroup）、Y.3/ Y.6/ Y.10 各节均按标志有条件执行。
+- **扩展钩子模式同步**（32320f3）：`extensions/nanopir3s-kconfig.sh` 新增 keep_set 机制——从 `.trim-mode` 标记文件或 `R3S_TRIM_MODE` 环境变量检测当前模式，docker/ebpf 保护符号在 opts_y/opts_m 过滤、opts_n 追加、.config 直写三处全部跳过。解决 trim 脚本开启的项被钩子再次关闭的问题。
+- **脚本输出增强**：末尾新增生成 config 的 =y / =m / 合计 计数 + 模式打印。
+- 实测数据：minimal 860(y/m)，ebpf 872，docker 894，full 906。基线 888(y/m)。
 
 **v2.8 新增裁剪：**
 - LRU_GEN x3（多代LRU）+ PWM_ROCKCHIP x2（R3S DTS无PWM）+ PER_VMA_LOCK（def_bool y）
@@ -225,6 +236,7 @@ When editing trimming logic: the red-line lists encode hard requirements for the
 - Section 1: 从 Armbian `opts_m` 数组中删除项（v2.0: ~180 项 ebtables/xtables/ipset/VETH 容器网络; v2.1: +25 项 NFT_DUP/FWD/QUOTA/HASH/SOCKET/TPROXY/FIB 等）
 - Section 2: 所有项同时追加 `opts_n` 双重保险（v2.1: +53 项）
 - Section 3: 直接 sed 修改 config 文件作为最终兜底
+- **v2.12**: 以上四处（opts_y 过滤、opts_m 过滤、opts_n 追加、.config 直写）均增加 keep_set 守卫，docker/ebpf 模式下保护对应符号不被误关
 
 
 ## 历史版本
@@ -417,6 +429,6 @@ NanoPi R3S: **RK3566** (quad Cortex-A55), **2GB** RAM, 2x GbE (RTL8211F + RTL811
 
 - Custom shell scripts use Chinese comments/log output and colorized `info`/`warn`/`err`/`ok` helpers. Match that style when extending them.
 - `config-nanopir3s.conf` is the R3S build parameter file for Armbian's `compile.sh`.
-- `extensions/nanopir3s-kconfig.sh` is the Armbian extension hook that removes unwanted items from Armbian's `opts_y`/`opts_m` arrays (BPF/AppArmor/systemd cgroup/ebtables/xtables/容器网络等) and adds `opts_n` as double insurance before olddefconfig.
+- `extensions/nanopir3s-kconfig.sh` is the Armbian extension hook that removes unwanted items from Armbian's `opts_y`/`opts_m` arrays (BPF/AppArmor/systemd cgroup/ebtables/xtables/容器网络等) and adds `opts_n` as double insurance before olddefconfig. v2.12 新增 keep_set 机制：从 `.trim-mode` 标记文件或 `R3S_TRIM_MODE` 环境变量检测裁剪模式，docker/ebpf 模式下保护符号在 opts_y 过滤、opts_m 过滤、opts_n 追加、.config 直写四处全部跳过，避免 trim 脚本开启的项被钩子再次关闭。
 - `*.config.bak.*`, `*.baseline`, and `trim-r3s.log` are generated artifacts, not source.
-- `samples/linux-rockchip64-current.config.base` is the untrimmed Armbian default config (4547 items); `samples/linux-rockchip64-current.config.baseline` is the fully expanded olddefconfig output (8875 items).
+- `samples/linux-rockchip64-current.config.base` is the untrimmed Armbian default config (4447 items, 1877 y/m); `samples/linux-rockchip64-current.config.baseline` is the v2.11 裁剪产物的 olddefconfig 解析结果（2788 项，其中 888 y/m），作为 trim-r3s-kernel.sh 的输入基线。

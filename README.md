@@ -2,23 +2,29 @@
 
 NanoPi R3S 路由器专用最小化内核配置工具链。
 
-基于 Armbian build framework，将上游 5935 项内核配置裁剪至 879 项（-85.2%）。
+基于 Armbian build framework，从基线 888 项（y/m）按需裁剪至 860~906 项，支持 4 种裁剪模式：纯路由器 / 容器 / eBPF / 全功能。
 
 ## 目录结构
 
 ```
 r3s-kernel-trim/
-├── trim-r3s-kernel.sh                  # 内核配置裁剪脚本（A-Z 共 35+ 节）
+├── trim-r3s-kernel.sh                  # 内核配置裁剪脚本（A-Z + ENABLE_DOCKER/EBPF 守卫）
 ├── olddefconfig-r3s.sh                 # Kconfig 依赖解析（make olddefconfig 封装）
-├── config-nanopir3s.conf               # R3S 构建参数（Argbian compile.sh 用）
-├── linux-rockchip64-current.config     # 最终裁剪产物（核心交付件）
+├── config-nanopir3s.conf               # R3S 构建参数（Armbian compile.sh 用）
+├── samples/
+│   ├── linux-rockchip64-current.config.baseline  # 裁剪输入基线（888 y/m）
+│   └── linux-rockchip64-current.config.base      # 未裁剪 Armbian 默认 config
+├── kernel/
+│   └── rockchip64-current/
+│       └── linux-rockchip64-current.config       # 裁剪产物（按 --mode 产出）
 ├── extensions/
-│   └── nanopir3s-kconfig.sh            # Armbian 扩展钩子（移除 Armbian opts 注入）
+│   └── nanopir3s-kconfig.sh            # Armbian 扩展钩子（移除 Armbian opts 注入 + keep_set）
 ├── docs/
 │   ├── r3s-device.md                   # R3S 硬件规格
 │   ├── trim-requirement.md             # 裁剪需求清单
 │   └── build-r3s-alpine.md             # Alpine Linux 集成指南
-└── CLAUDE.md                           # AI 辅助指引
+├── CLAUDE.md                           # AI 辅助指引
+└── .gitignore
 ```
 
 ## 技术栈
@@ -27,7 +33,42 @@ r3s-kernel-trim/
 **内核**: Linux 6.18 arm64  
 **软件**: OpenRC + nftables + sing-box + WireGuard + tailscale + cloudflared/WARP + easytier
 
-## 快速开始
+## 本地裁剪（可选，无需 Armbian 构建环境）
+
+在将配置部署到 Armbian 之前，可先在本 repo 内按需裁剪：
+
+```bash
+git clone https://github.com/YOURNAME/r3s-kernel-trim
+cd r3s-kernel-trim
+
+# 默认 minimal 模式（纯路由器，860 y/m，最大裁剪）
+./trim-r3s-kernel.sh
+
+# 保留容器栈（Docker/Podman，894 y/m）
+./trim-r3s-kernel.sh --mode docker
+
+# 保留 eBPF 工具链（cilium/bpftrace/bcc，872 y/m）
+./trim-r3s-kernel.sh --mode ebpf
+
+# 全功能（docker + ebpf，906 y/m）
+./trim-r3s-kernel.sh --mode full
+
+# 查看帮助
+./trim-r3s-kernel.sh --help
+```
+
+产物写入 `kernel/rockchip64-current/linux-rockchip64-current.config`。
+
+### 模式对照
+
+| 模式 | Docker | eBPF | y/m | 用途 |
+|------|--------|------|-----|------|
+| `minimal` | ✗ | ✗ | 860 | 纯路由器，最大裁剪 |
+| `ebpf` | ✗ | ✓ | 872 | 网络调试 / cilium / bpftrace |
+| `docker` | ✓ | ✗ | 894 | 跑容器化服务 |
+| `full` | ✓ | ✓ | 906 | 全功能 |
+
+## 在 Armbian 构建中使用
 
 ```bash
 # 1. 克隆 Armbian 构建框架
@@ -107,24 +148,36 @@ find /tmp/r3s-uboot -name 'u-boot-rockchip.bin' -exec cp {} /tmp/r3s-uboot/ \;
 
 ## 裁剪效果
 
-| 指标 | 原始 | v2.10 | 改善 |
-|------|------|--------|------|
-| =y 项 | — | 806 | — |
-| =m 项 | — | 73 | — |
-| 总配置项 | 5935 | 879 | -85.2% |
+### 各模式 y/m 配置项数（v2.12）
+
+| 模式 | =y | =m | 合计 | 增量 |
+|------|-----|-----|------|------|
+| `minimal` | 785 | 75 | **860** | 基线 |
+| `ebpf` | 794 | 78 | **872** | +12 |
+| `docker` | 820 | 74 | **894** | +34 |
+| `full` | 829 | 77 | **906** | +46 |
+
+### 编译产物（minimal 模式）
+
+| 指标 | 上游 Armbian | v2.12 minimal | 改善 |
+|------|-------------|---------------|------|
 | vmlinuz | 28.5 MiB | 9.0 MiB | -68.4% |
 | 模块大小 | 15.7 MiB | 2.0 MiB | -87.3% |
 | 模块数量 | 412 | 68 | -83.5% |
 | deb 包 | 78 MB | 42 MB | -46.2% |
 | 可烧录镜像 | 159 MB | 94 MB | -40.9% |
 
+> 注：docker/ebpf/full 模式的编译产物大小未单独测量，差距主要在内核模块增量（`OVERLAY_FS`/`VETH`/`BINFMT_MISC` 等 =m 项 + BTF 调试段）。
+
 ## 裁剪守护（红线检查）
 
-`trim-r3s.sh` 每次运行后自动校验关键功能不被误裁：
+`trim-r3s-kernel.sh` 每次运行后自动校验关键功能不被误裁（`check_red_line` 函数）：
 
-- **STRICT_Y**: WireGuard、ext4、TUN、GMAC 驱动（RTL8211F）、RTC（RK808）
-- **EXIST**: nftables、Netfilter、NAT、VLAN、PPPoE、bonding
-- **反向检查**: WireGuard 依赖链完整性
+- **RED_LINE_STRICT_Y** (必须=y): WireGuard (CURVE25519/BLAKE2S/CHACHA20POLY1305)、ext4、TUN、GMAC 驱动（DWMAC_ROCKCHIP）、RTC（HYM8563）
+- **RED_LINE_EXIST** (至少=m): nftables、Netfilter、NAT、VLAN、PPPoE、bonding
+- **反向检查**: WireGuard 依赖链完整性（任一依赖被 disable 则失败）
+
+运行结束后自动打印生成 config 的 =y / =m / 合计 计数和当前模式。
 
 ## License
 
