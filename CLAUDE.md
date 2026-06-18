@@ -24,8 +24,15 @@ Requires root/sudo. Host: Ubuntu 24.04 / Armbian, or any Docker-capable Linux fo
 ### Kernel config trimming toolchain (the custom work)
 ```bash
 # 1. Trim the config (disables unneeded subsystems, enforces a "red line" of must-keep options)
-./trim-r3s.sh                                          # operates on the default config
-./trim-r3s.sh linux-rockchip64-current.config          # explicit target
+#    输入 baseline: samples/linux-rockchip64-current.config.baseline
+#    输出 config:   kernel/rockchip64-current/linux-rockchip64-current.config
+./trim-r3s-kernel.sh                       # 默认 minimal 模式（纯路由器，最大裁剪）
+./trim-r3s-kernel.sh --mode minimal        # 同上，显式指定
+./trim-r3s-kernel.sh --mode docker         # 保留容器栈（Docker/Podman 可运行）
+./trim-r3s-kernel.sh --mode ebpf           # 保留 eBPF 工具链（cilium/bpftrace/bcc）
+./trim-r3s-kernel.sh --mode full           # docker + ebpf 全开
+./trim-r3s-kernel.sh --help                # 用法
+# 运行结束打印生成 config 的 =y / =m / 合计 计数 + 当前模式
 
 # 2. Resolve Kconfig dependencies after trimming (runs `make olddefconfig` against real kernel source)
 ./olddefconfig-r3s.sh            # auto-locates unpacked kernel source under cache/sources
@@ -34,13 +41,31 @@ Requires root/sudo. Host: Ubuntu 24.04 / Armbian, or any Docker-capable Linux fo
 ```
 `olddefconfig-r3s.sh` needs unpacked kernel source. If none exists, trigger one with a kernel build first (see Building above). Both scripts auto-backup the config before writing (`.bak.<epoch>` / `.before-olddef.<ts>`).
 
+### 裁剪模式（`--mode`，v2.12 新增）
+
+`trim-r3s-kernel.sh` 支持四种模式，按需保留 eBPF / 容器（Docker/Podman）支持：
+
+| 模式 | Docker | eBPF | 实测 y/m 合计 | 用途 |
+|------|--------|------|--------------|------|
+| `minimal`（默认） | ✗ | ✗ | 860 | 纯路由器，最大裁剪 |
+| `ebpf` | ✗ | ✓ | 872 | cilium / bpftrace / bcc 网络调试 |
+| `docker` | ✓ | ✗ | 894 | 在 R3S 上跑容器化服务 |
+| `full` | ✓ | ✓ | 906 | 全功能 |
+
+实现要点（脚本内用 `ENABLE_DOCKER` / `ENABLE_EBPF` 标志包裹原裁剪块）：
+- **docker** 在 docker 模式恢复：`MULTIUSER`+全套 namespaces、`USER_NS`、`MEMCG`、`CPUSETS`、`CGROUP_*` controllers、`CGROUP_SCHED`+`FAIR_GROUP_SCHED`+`CFS_BANDWIDTH`、`BLK_CGROUP` 全链、`OVERLAY_FS`/`VETH`/`MACVLAN`/`IPVLAN`/`BRIDGE`(=m)、`BINFMT_MISC`。注意 H1 节原本无条件再砍 `BRIDGE`，已加 docker 守卫；`FREEZER` 同理（由 `CGROUP_FREEZER` select）。
+- **ebpf** 在 ebpf 模式恢复：`BPF_SYSCALL`、`CGROUP_BPF`、`BPF_JIT`、`XDP_SOCKETS`、`BPF_EVENTS`、`NET_CLS_BPF`/`NET_ACT_BPF`、`DEBUG_INFO`+`DEBUG_INFO_BTF`(+MODULES，CO-RE 必需)。
+- 脚本运行后把模式写入 `.trim-mode` 标记文件（gitignored），供扩展钩子读取——见下方"扩展钩子模式同步"。
+
+**已知未决（需实机验证）**：docker 模式下钩子仍砍掉全部 `IP_NF_*`/xtables，故 Docker 默认 iptables 后端不可用，需让 Docker 走 nftables 后端或 `--iptables=false`。容器/eBPF 的完整依赖闭包尚未跑 olddefconfig 验证。
+
 ## How the custom config reaches the build
 
 Armbian's `prepare_kernel_config_core_or_userpatches` (in `lib/functions/compilation/kernel-config.sh`) checks for `userpatches/$LINUXCONFIG.config` and uses it **in place of** the in-tree `config/kernel/$LINUXCONFIG.config` when present. For the R3S, `LINUXCONFIG` resolves to `linux-rockchip64-current`, so `userpatches/linux-rockchip64-current.config` is the file that actually gets compiled. That is why the trimming scripts target exactly that filename.
 
 Board mapping: `config/boards/nanopi-r3s.csc` → `BOARDFAMILY=rk35xx`, `KERNEL_TARGET=current,edge`. (`nanopi-r3s-lts.conf` is a separate LTS variant.)
 
-## trim-r3s.sh structure
+## trim-r3s-kernel.sh structure
 
 Single self-contained bash script. Key pieces:
 - Helpers: `disable_config` (→ `# CONFIG_X is not set`), `set_y`, `set_m`.

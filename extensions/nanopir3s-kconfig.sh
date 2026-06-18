@@ -14,6 +14,73 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 	display_alert "${EXTENSION}" "Undoing Armbian eBPF/DEBUG/BTF injections for minimal R3S router kernel"
 
 	# =========================================================================
+	# 裁剪模式检测（与 trim-r3s-kernel.sh --mode 对齐）
+	#   读取优先级：环境变量 R3S_TRIM_MODE > userpatches/.trim-mode 标记文件 > minimal
+	#   docker/ebpf/full 模式下，对应的容器/eBPF 符号会进入 keep_set，
+	#   在后续 opts_y/opts_m 过滤、opts_n 追加、.config 直写四处全部跳过，
+	#   避免把 trim 脚本刚开启的项又关掉。
+	# =========================================================================
+	local trim_mode="${R3S_TRIM_MODE:-}"
+	if [[ -z "$trim_mode" ]]; then
+		local mode_file
+		for mode_file in \
+			"$(dirname "${BASH_SOURCE[0]}")/.trim-mode" \
+			"./userpatches/.trim-mode" \
+			"./.trim-mode"; do
+			[[ -f "$mode_file" ]] && { trim_mode="$(<"$mode_file")"; break; }
+		done
+	fi
+	trim_mode="${trim_mode//[[:space:]]/}"
+	[[ -z "$trim_mode" ]] && trim_mode="minimal"
+
+	local enable_docker=0 enable_ebpf=0
+	case "$trim_mode" in
+		minimal) ;;
+		docker)  enable_docker=1 ;;
+		ebpf)    enable_ebpf=1 ;;
+		full)    enable_docker=1; enable_ebpf=1 ;;
+		*)
+			display_alert "${EXTENSION}" "未知 R3S_TRIM_MODE='${trim_mode}'，按 minimal 处理" "wrn"
+			trim_mode="minimal"
+			;;
+	esac
+	display_alert "${EXTENSION}" "Trim mode: ${trim_mode} (docker=${enable_docker}, ebpf=${enable_ebpf})" "info"
+
+	# keep_set：本模式下必须保留、严禁被钩子关闭的符号（含依赖闭包）
+	local -A keep_set=()
+	if [[ $enable_docker -eq 1 ]]; then
+		local k
+		for k in \
+			MULTIUSER NAMESPACES UTS_NS IPC_NS PID_NS NET_NS CGROUP_NS TIME_NS USER_NS \
+			POSIX_MQUEUE POSIX_MQUEUE_SYSCTL \
+			MEMCG MEMCG_KMEM CPUSETS PROC_PID_CPUSET \
+			CGROUP_SCHED FAIR_GROUP_SCHED CFS_BANDWIDTH \
+			CGROUP_PIDS CGROUP_DEVICE CGROUP_CPUACCT CGROUP_HUGETLB CGROUP_FREEZER FREEZER \
+			CGROUP_NET_PRIO CGROUP_NET_CLASSID \
+			BLK_CGROUP CGROUP_WRITEBACK BLK_CGROUP_IOLATENCY BLK_CGROUP_IOCOST BLK_CGROUP_IOPRIO \
+			BLK_CGROUP_RWSTAT BLK_CGROUP_PUNT_BIO \
+			BINFMT_MISC \
+			BRIDGE BRIDGE_VLAN_FILTERING STP LLC \
+			VETH MACVLAN IPVLAN IPVLAN_L3S NET_L3_MASTER_DEV \
+			OVERLAY_FS FS_STACK; do
+			keep_set[$k]=1
+		done
+	fi
+	if [[ $enable_ebpf -eq 1 ]]; then
+		local k
+		for k in \
+			NETFILTER_BPF_LINK BPF_SYSCALL BPF_JIT BPF_JIT_ALWAYS_ON BPF_EVENTS \
+			CGROUP_BPF NET_CLS_BPF NET_ACT_BPF NET_SOCK_MSG \
+			XDP_SOCKETS XDP_SOCKETS_DIAG \
+			DEBUG_INFO DEBUG_INFO_DWARF5 DEBUG_INFO_BTF DEBUG_INFO_BTF_MODULES; do
+			keep_set[$k]=1
+		done
+	fi
+
+	# 判定某符号是否处于 keep_set（被保护）
+	_r3s_kept() { [[ -n "${keep_set[$1]:-}" ]]; }
+
+	# =========================================================================
 	# 0. 从 opts_y 中删除不需要强制 =y 的项（opts_y 后处理，opts_n 无效！）
 	# =========================================================================
 	local -a remove_from_y=(
@@ -146,6 +213,11 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 	local -a filtered_y=()
 	local opt
 	for opt in "${opts_y[@]}"; do
+		# keep_set 项一律保留（docker/ebpf 模式需要）
+		if _r3s_kept "$opt"; then
+			filtered_y+=("$opt")
+			continue
+		fi
 		local skip=0
 		for rem in "${remove_from_y[@]}"; do
 			[[ "$opt" == "$rem" ]] && { skip=1; break; }
@@ -300,6 +372,11 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 	# 过滤 opts_m
 	local -a filtered_m=()
 	for opt in "${opts_m[@]}"; do
+		# keep_set 项一律保留（docker/ebpf 模式需要）
+		if _r3s_kept "$opt"; then
+			filtered_m+=("$opt")
+			continue
+		fi
 		local skip=0
 		for rem in "${remove_from_m[@]}"; do
 			[[ "$opt" == "$rem" ]] && { skip=1; break; }
@@ -820,6 +897,16 @@ opts_n+=("VDSO_GETRANDOM")            # 纯性能，禁后走syscall
 opts_n+=("MULTIUSER")                 # OpenRC单用户不需
 	opts_y+=("PREEMPT_VOLUNTARY")
 
+	# 从 opts_n 中剔除 keep_set 成员（docker/ebpf 模式需要这些项，不能进 opts_n）
+	if [[ ${#keep_set[@]} -gt 0 ]]; then
+		local -a filtered_n=()
+		for opt in "${opts_n[@]}"; do
+			_r3s_kept "$opt" && continue
+			filtered_n+=("$opt")
+		done
+		opts_n=("${filtered_n[@]}")
+	fi
+
 
 		# =========================================================================
 		# 3. 直接修改 .config（绕过 opts数组, 对抗 olddefconfig default y/select）
@@ -831,11 +918,12 @@ opts_n+=("MULTIUSER")                 # OpenRC单用户不需
 			all_disable+=("${remove_from_y[@]}")
 			all_disable+=("${remove_from_m[@]}")
 			all_disable+=("${opts_n[@]}")
-			# 去重
+			# 去重 + 跳过 keep_set（docker/ebpf 保护项，严禁直写 disable）
 			local -A seen=()
 			local -a unique_disable=()
 			for item in "${all_disable[@]}"; do
 				[[ -n "${seen[$item]}" ]] && continue
+				_r3s_kept "$item" && continue
 				seen[$item]=1
 				unique_disable+=("$item")
 			done

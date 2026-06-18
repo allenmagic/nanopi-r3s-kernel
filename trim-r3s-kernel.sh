@@ -15,8 +15,8 @@ set -euo pipefail
 
 # ---------- 路径 ----------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC="${SCRIPT_DIR}/linux-rockchip64-current.config.baseline"
-DST="${SCRIPT_DIR}/linux-rockchip64-current.config"
+SRC="${SCRIPT_DIR}/samples/linux-rockchip64-current.config.baseline"
+DST="${SCRIPT_DIR}/kernel/rockchip64-current/linux-rockchip64-current.config"
 
 # ---------- 日志 ----------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -25,11 +25,75 @@ warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 err()   { echo -e "${RED}[ERR]${NC}   $*"; }
 ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 
+# ---------- 命令行参数 ----------
+# 用法：
+#   ./trim-r3s-kernel.sh                    # 默认 minimal 模式
+#   ./trim-r3s-kernel.sh --mode minimal     # 纯路由器（最小裁剪）
+#   ./trim-r3s-kernel.sh --mode docker      # 支持 Docker/Podman 容器
+#   ./trim-r3s-kernel.sh --mode ebpf        # 支持 eBPF 工具链（cilium/bpftrace/bcc）
+#   ./trim-r3s-kernel.sh --mode full        # Docker + eBPF 全开
+TRIM_MODE="minimal"
+
+usage() {
+	cat <<EOF
+Usage: $(basename "$0") [--mode <minimal|docker|ebpf|full>] [-h|--help]
+
+裁剪模式：
+  minimal  纯路由器（默认），最大限度裁剪，~879 项 y/m
+  docker   保留容器栈（namespaces/cgroup controllers/OVERLAY_FS/VETH/BRIDGE）
+  ebpf     保留 eBPF 工具链（BPF_SYSCALL/CGROUP_BPF/BPF_JIT/BTF/XDP）
+  full     docker + ebpf 全开
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--mode)
+			[[ $# -ge 2 ]] || { err "--mode 缺少参数"; usage; exit 1; }
+			TRIM_MODE="$2"
+			shift 2
+			;;
+		--mode=*)
+			TRIM_MODE="${1#--mode=}"
+			shift
+			;;
+		-h|--help)
+			usage; exit 0
+			;;
+		*)
+			err "未知参数：$1"
+			usage; exit 1
+			;;
+	esac
+done
+
+ENABLE_DOCKER=0
+ENABLE_EBPF=0
+case "$TRIM_MODE" in
+	minimal) ;;
+	docker)  ENABLE_DOCKER=1 ;;
+	ebpf)    ENABLE_EBPF=1 ;;
+	full)    ENABLE_DOCKER=1; ENABLE_EBPF=1 ;;
+	*)
+		err "未知 --mode: $TRIM_MODE (可选：minimal|docker|ebpf|full)"
+		usage; exit 1
+		;;
+esac
+
+info "裁剪模式：${YELLOW}${TRIM_MODE}${NC}  (Docker=${ENABLE_DOCKER}, eBPF=${ENABLE_EBPF})"
+
 # ---------- 前置检查 ----------
 [[ -f "$SRC" ]] || { err "baseline 不存在：$SRC"; exit 1; }
 info "输入：$SRC"
 info "输出：$DST"
+mkdir -p "$(dirname "$DST")"
 cp "$SRC" "$DST"
+
+# 记录裁剪模式：供扩展钩子 extensions/nanopir3s-kconfig.sh 读取，
+# 使其在 docker/ebpf 模式下不要再砍掉容器/eBPF 相关项。
+# 钩子读取顺序：环境变量 R3S_TRIM_MODE > 本标记文件 > 默认 minimal
+echo "$TRIM_MODE" > "${SCRIPT_DIR}/.trim-mode"
+info "已写入裁剪模式标记：${SCRIPT_DIR}/.trim-mode = ${TRIM_MODE}"
 
 # ---------- 辅助函数 ----------
 set_y()  { local k="CONFIG_$1"; sed -i "/^# *${k} is not set/d; /^${k}=/d" "$DST"; echo "${k}=y" >> "$DST"; }
@@ -218,19 +282,29 @@ unset_k IFB
 # =============================================================================
 # C. 容器栈裁剪（保留 namespaces + cgroup 框架，砍掉容器专用网络/存储）
 # =============================================================================
-info "[C] 容器专用网络/存储裁剪（namespaces/cgroup 框架保留）"
+if [[ $ENABLE_DOCKER -eq 0 ]]; then
+	info "[C] 容器专用网络/存储裁剪（namespaces/cgroup 框架保留）"
 
-# 保留：MEMCG / BLK_CGROUP / 全套 namespaces（其他工具可能用到）
-# 砍掉：容器专用设备
+	# 保留：MEMCG / BLK_CGROUP / 全套 namespaces（其他工具可能用到）
+	# 砍掉：容器专用设备
 
-unset_k OVERLAY_FS           # 容器分层文件系统
-unset_k VETH                 # 容器虚拟网卡对
-unset_k MACVLAN              # 容器 MACVLAN
-unset_k IPVLAN               # 容器 IPVLAN
+	unset_k OVERLAY_FS           # 容器分层文件系统
+	unset_k VETH                 # 容器虚拟网卡对
+	unset_k MACVLAN              # 容器 MACVLAN
+	unset_k IPVLAN               # 容器 IPVLAN
 
-# 桥接 — 纯路由器（R3S 双网口路由转发，不需桥接）
-unset_k BRIDGE
-unset_k BRIDGE_VLAN_FILTERING
+	# 桥接 — 纯路由器（R3S 双网口路由转发，不需桥接）
+	unset_k BRIDGE
+	unset_k BRIDGE_VLAN_FILTERING
+else
+	info "[C] ${YELLOW}[Docker 模式]${NC} 保留容器网络/存储 (OVERLAY_FS/VETH/MACVLAN/IPVLAN/BRIDGE)"
+	set_m OVERLAY_FS
+	set_m VETH
+	set_m MACVLAN
+	set_m IPVLAN
+	set_m BRIDGE
+	set_y BRIDGE_VLAN_FILTERING
+fi
 
 # =============================================================================
 # D. SQUASHFS 全关（路由器不用 squashfs 镜像）
@@ -436,10 +510,13 @@ unset_k RD_LZMA
 	info "[H.3-H] sing-box纯路由精简 (~13 项)"
 
 	# --- H1: BRIDGE 全链（R3S仅2端口WAN+LAN，无需L2桥接）---
-	unset_k BRIDGE
-	unset_k STP
-	unset_k LLC
-	unset_k NETFILTER_FAMILY_BRIDGE
+	# Docker 模式下 BRIDGE/STP/LLC 是默认 docker0 桥接网络必需，保留
+	if [[ $ENABLE_DOCKER -eq 0 ]]; then
+		unset_k BRIDGE
+		unset_k STP
+		unset_k LLC
+		unset_k NETFILTER_FAMILY_BRIDGE
+	fi
 
 	# --- H2: IP_ROUTE_CLASSID（xt_realm + tc route 已砍，孤儿）---
 	unset_k IP_ROUTE_CLASSID
@@ -724,37 +801,56 @@ set_y DW_WATCHDOG
 #    但 BPF_SYSCALL/CGROUP_BPF 可以且必须禁掉
 #    root cause: NETFILTER_BPF_LINK（Armbian 核心 opts_y 注入 + default y）
 # =============================================================================
-info "[K] BPF 终结者 (BPF=y 由 NET=y 强制select，无法禁用)"
+if [[ $ENABLE_EBPF -eq 0 ]]; then
+	info "[K] BPF 终结者 (BPF=y 由 NET=y 强制select，无法禁用)"
 
-# 元凶: NETFILTER_BPF_LINK (default y，select BPF_SYSCALL → select BPF → select CGROUP_BPF)
-unset_k NETFILTER_BPF_LINK
+	# 元凶: NETFILTER_BPF_LINK (default y，select BPF_SYSCALL → select BPF → select CGROUP_BPF)
+	unset_k NETFILTER_BPF_LINK
 
-# BPF_SYSCALL + 子项（BPF_SYSCALL select BPF，但 NET 已经 select BPF）
-unset_k BPF_SYSCALL
-unset_k BPF_JIT
-unset_k BPF_JIT_ALWAYS_ON
-unset_k BPF_JIT_DEFAULT_ON
-unset_k BPF_UNPRIV_DEFAULT_OFF
+	# BPF_SYSCALL + 子项（BPF_SYSCALL select BPF，但 NET 已经 select BPF）
+	unset_k BPF_SYSCALL
+	unset_k BPF_JIT
+	unset_k BPF_JIT_ALWAYS_ON
+	unset_k BPF_JIT_DEFAULT_ON
+	unset_k BPF_UNPRIV_DEFAULT_OFF
 
-# cgroup BPF（被 BPF_SYSCALL 反向拉起）
-unset_k CGROUP_BPF
+	# cgroup BPF（被 BPF_SYSCALL 反向拉起）
+	unset_k CGROUP_BPF
 
-# 防御性：其他可能 select BPF_SYSCALL 的项
-unset_k NETFILTER_XT_MATCH_BPF    # xt_bpf（xtables 已全砍，防御性）
-unset_k LWTUNNEL_BPF              # 轻量级隧道 BPF
-unset_k XDP_SOCKETS               # XDP socket
-unset_k XDP_SOCKETS_DIAG
-unset_k BPF_STREAM_PARSER         # sockmap BPF
-unset_k BPF_EVENTS                # tracing BPF
-unset_k BPF_KPROBE_OVERRIDE
-unset_k BPF_LSM
-unset_k NET_CLS_BPF               # tc BPF 分类器
-unset_k NET_ACT_BPF               # tc BPF action
+	# 防御性：其他可能 select BPF_SYSCALL 的项
+	unset_k NETFILTER_XT_MATCH_BPF    # xt_bpf（xtables 已全砍，防御性）
+	unset_k LWTUNNEL_BPF              # 轻量级隧道 BPF
+	unset_k XDP_SOCKETS               # XDP socket
+	unset_k XDP_SOCKETS_DIAG
+	unset_k BPF_STREAM_PARSER         # sockmap BPF
+	unset_k BPF_EVENTS                # tracing BPF
+	unset_k BPF_KPROBE_OVERRIDE
+	unset_k BPF_LSM
+	unset_k NET_CLS_BPF               # tc BPF 分类器
+	unset_k NET_ACT_BPF               # tc BPF action
 
-# ⚠️ 不砍 PERF_EVENTS（影响 perf 工具、CPU 性能计数器）
-# ⚠️ 不砍 KPROBES（影响某些内核机制）
-# ⚠️ 不砍 HAVE_EBPF_JIT（架构能力声明，砍不掉）
-# ⚠️ BPF 本身无法禁（NET=y → select BPF），但 BPF=y 只是 bool 声明，无实际代码
+	# ⚠️ 不砍 PERF_EVENTS（影响 perf 工具、CPU 性能计数器）
+	# ⚠️ 不砍 KPROBES（影响某些内核机制）
+	# ⚠️ 不砍 HAVE_EBPF_JIT（架构能力声明，砍不掉）
+	# ⚠️ BPF 本身无法禁（NET=y → select BPF），但 BPF=y 只是 bool 声明，无实际代码
+else
+	info "[K] ${YELLOW}[eBPF 模式]${NC} 保留 BPF_SYSCALL/CGROUP_BPF/JIT/XDP + BTF"
+	set_y BPF_SYSCALL
+	set_y BPF_JIT
+	set_y BPF_JIT_ALWAYS_ON
+	set_y CGROUP_BPF
+	set_y BPF_EVENTS              # tracing BPF（bpftrace/bcc 需要）
+	set_y XDP_SOCKETS             # XDP socket（cilium 高性能数据面）
+	set_y NET_CLS_BPF             # tc BPF 分类器
+	set_y NET_ACT_BPF             # tc BPF action
+
+	# CO-RE eBPF 需要 BTF 调试信息
+	set_y DEBUG_INFO
+	set_y DEBUG_INFO_BTF
+	set_y DEBUG_INFO_BTF_MODULES
+
+	# NETFILTER_BPF_LINK 由 BPF_SYSCALL 拉起，不显式 set_y（让 default y 生效）
+fi
 
 # =============================================================================
 # L. USB 子系统全栈砍除（USB-C 仅供电，无数据需求）
@@ -888,45 +984,91 @@ unset_k DEFAULT_SECURITY_APPARMOR
 # =============================================================================
 info "[M] systemd 专属 cgroup/特性砍除"
 
-# v1 controllers（openrc 不依赖）
-unset_k CGROUP_PIDS              # systemd 的 TasksMax 用
-unset_k CGROUP_RDMA
-unset_k CGROUP_DEVICE            # 容器设备访问控制
-unset_k CGROUP_CPUACCT
-unset_k CGROUP_PERF              # perf cgroup 隔离
-unset_k CGROUP_HUGETLB
-unset_k CGROUP_NET_PRIO
-unset_k CGROUP_NET_CLASSID
-unset_k CGROUP_MISC
-unset_k CGROUP_DMEM
-unset_k CGROUP_FREEZER           # systemd-cgroup 用，openrc 可选
+if [[ $ENABLE_DOCKER -eq 0 ]]; then
+	# v1 controllers（openrc 不依赖）
+	unset_k CGROUP_PIDS              # systemd 的 TasksMax 用
+	unset_k CGROUP_RDMA
+	unset_k CGROUP_DEVICE            # 容器设备访问控制
+	unset_k CGROUP_CPUACCT
+	unset_k CGROUP_PERF              # perf cgroup 隔离
+	unset_k CGROUP_HUGETLB
+	unset_k CGROUP_NET_PRIO
+	unset_k CGROUP_NET_CLASSID
+	unset_k CGROUP_MISC
+	unset_k CGROUP_DMEM
+	unset_k CGROUP_FREEZER           # systemd-cgroup 用，openrc 可选
 
-# 调度组（单一负载无需精细调度）
-unset_k RT_GROUP_SCHED
-unset_k FAIR_GROUP_SCHED
-unset_k CFS_BANDWIDTH
-unset_k CGROUP_SCHED               # 调度组框架（FAIR/RT 都依赖它）
-unset_k CPUSETS                    # cpuset cgroup
+	# 调度组（单一负载无需精细调度）
+	unset_k RT_GROUP_SCHED
+	unset_k FAIR_GROUP_SCHED
+	unset_k CFS_BANDWIDTH
+	unset_k CGROUP_SCHED               # 调度组框架（FAIR/RT 都依赖它）
+	unset_k CPUSETS                    # cpuset cgroup
 
-# 块设备 cgroup
-unset_k BLK_CGROUP
-unset_k CGROUP_WRITEBACK
-unset_k BLK_CGROUP_IOLATENCY
-unset_k BLK_CGROUP_IOCOST
-unset_k BLK_CGROUP_IOPRIO
-unset_k BLK_CGROUP_FC_APPID
+	# 块设备 cgroup
+	unset_k BLK_CGROUP
+	unset_k CGROUP_WRITEBACK
+	unset_k BLK_CGROUP_IOLATENCY
+	unset_k BLK_CGROUP_IOCOST
+	unset_k BLK_CGROUP_IOPRIO
+	unset_k BLK_CGROUP_FC_APPID
 
-# USER_NS（无容器需求；如未来需要 sing-box rootless 模式可恢复）
-unset_k USER_NS
+	# USER_NS（无容器需求；如未来需要 sing-box rootless 模式可恢复）
+	unset_k USER_NS
 
-# systemd 专属基础设施
-unset_k FANOTIFY                 # systemd 文件监控
-unset_k FANOTIFY_ACCESS_PERMISSIONS
-unset_k AUDIT                    # systemd 审计接口
-unset_k AUDITSYSCALL
-unset_k AUDIT_WATCH
-unset_k AUDIT_TREE
-unset_k BINFMT_MISC              # systemd-binfmt；纯 ARM64 原生二进制不需要
+	# systemd 专属基础设施
+	unset_k FANOTIFY                 # systemd 文件监控
+	unset_k FANOTIFY_ACCESS_PERMISSIONS
+	unset_k AUDIT                    # systemd 审计接口
+	unset_k AUDITSYSCALL
+	unset_k AUDIT_WATCH
+	unset_k AUDIT_TREE
+	unset_k BINFMT_MISC              # systemd-binfmt；纯 ARM64 原生二进制不需要
+else
+	info "    ${YELLOW}[Docker 模式]${NC} 保留 cgroup controllers / USER_NS / BINFMT_MISC"
+	# Docker/Podman 必需的 cgroup controllers
+	set_y CGROUP_PIDS                # 限制容器内进程数（pids.max）
+	set_y CGROUP_DEVICE              # 容器设备 cgroup
+	set_y CGROUP_CPUACCT             # CPU 用量统计
+	set_y CGROUP_HUGETLB             # 大页内存限制
+	set_y CGROUP_FREEZER             # docker pause/unpause
+	set_y CGROUP_NET_PRIO            # 容器网络优先级
+	set_y CGROUP_NET_CLASSID         # 容器流量分类
+
+	# 调度组（容器 CPU 配额必需）
+	set_y FAIR_GROUP_SCHED
+	set_y CFS_BANDWIDTH              # docker --cpus 必需
+	set_y CGROUP_SCHED
+	set_y CPUSETS                    # docker --cpuset-cpus
+
+	# 块设备 cgroup（docker --device-read-bps 等）
+	set_y BLK_CGROUP
+	set_y BLK_CGROUP_IOLATENCY
+	set_y BLK_CGROUP_IOCOST
+	set_y BLK_CGROUP_IOPRIO
+	set_y CGROUP_WRITEBACK
+
+	# 用户命名空间（rootless 容器 / docker userns-remap）
+	set_y USER_NS
+
+	# 多架构镜像支持（docker buildx 跨架构镜像运行）
+	set_m BINFMT_MISC
+
+	# 注：FANOTIFY/AUDIT 仍然按 systemd 视角砍除（openrc + docker 也不需要）
+	unset_k FANOTIFY
+	unset_k FANOTIFY_ACCESS_PERMISSIONS
+	unset_k AUDIT
+	unset_k AUDITSYSCALL
+	unset_k AUDIT_WATCH
+	unset_k AUDIT_TREE
+
+	# CGROUP_RDMA / MISC / DMEM / RT_GROUP_SCHED / PERF 容器不需要
+	unset_k CGROUP_RDMA
+	unset_k CGROUP_PERF
+	unset_k CGROUP_MISC
+	unset_k CGROUP_DMEM
+	unset_k RT_GROUP_SCHED
+fi
 
 # =============================================================================
 # N. 内核统计/调试接口砍除（路由器不需要 PSI/SCHEDSTATS 等）
@@ -1429,10 +1571,16 @@ unset_k READABLE_ASM
 unset_k HEADERS_INSTALL
 
 # DEBUG_INFO 整体关闭（生产内核不需要符号）
-unset_k DEBUG_INFO
-unset_k DEBUG_INFO_NONE
-unset_k DEBUG_INFO_BTF           # ⚠️ BPF 已砍，BTF 也无意义
-unset_k DEBUG_INFO_BTF_MODULES
+# eBPF 模式下保留 DEBUG_INFO_BTF（CO-RE eBPF 必需），其他仍然砍
+if [[ $ENABLE_EBPF -eq 0 ]]; then
+	unset_k DEBUG_INFO
+	unset_k DEBUG_INFO_NONE
+	unset_k DEBUG_INFO_BTF           # ⚠️ BPF 已砍，BTF 也无意义
+	unset_k DEBUG_INFO_BTF_MODULES
+else
+	info "    [eBPF 模式] 保留 DEBUG_INFO + BTF（CO-RE eBPF 需要）"
+	# 已在 K 节用 set_y 启用，此处不重复
+fi
 
 # Magic SysRq（生产环境无控制台，砍掉）
 unset_k MAGIC_SYSRQ
@@ -1528,7 +1676,11 @@ unset_k SOCK_RX_QUEUE_MAPPING
 info "[Y.3] 内核框架瘦身"
 
 # Memory cgroup — 无 Docker/容器不需要内存分组限制
-unset_k MEMCG
+if [[ $ENABLE_DOCKER -eq 0 ]]; then
+	unset_k MEMCG
+else
+	set_y MEMCG                  # docker -m / --memory 必需
+fi
 
 # DEBUG_KERNEL — 调试框架门控（生产关闭）
 unset_k DEBUG_KERNEL
@@ -1629,7 +1781,10 @@ unset_k LZO_DECOMPRESS
 
 # FREEZER — suspend/hibernate 进程冷冻器
 # PM_SLEEP 和 CGROUP_FREEZER 均未启用，def_bool 结果为 n
-unset_k FREEZER
+# Docker 模式下 CGROUP_FREEZER=y 会 select FREEZER，此处不强制砍
+if [[ $ENABLE_DOCKER -eq 0 ]]; then
+	unset_k FREEZER
+fi
 
 # =============================================================================
 # Y.7 v2.4：编译实测后孤儿/冗余项清扫（~6 项）
@@ -1708,7 +1863,20 @@ unset_k NET_IP_TUNNEL
 unset_k VDSO_GETRANDOM
 
 # MULTIUSER — 多用户/组/权限支持（OpenRC 单用户路由不需要）
-unset_k MULTIUSER
+# Docker/容器需要 NAMESPACES，而 NAMESPACES depends on MULTIUSER
+if [[ $ENABLE_DOCKER -eq 0 ]]; then
+	unset_k MULTIUSER
+else
+	set_y MULTIUSER              # 容器必需：恢复后级联拉起 NAMESPACES
+	set_y NAMESPACES
+	set_y UTS_NS
+	set_y IPC_NS
+	set_y PID_NS
+	set_y NET_NS
+	set_y CGROUP_NS
+	set_y TIME_NS
+	set_y POSIX_MQUEUE           # docker 容器内 IPC 可能用
+fi
 
 # EFI_PARTITION — GPT 分区表（必须保留！Armbian r3s.csc 使用 GPT）
 # IMAGE_PARTITION_TABLE="gpt" → 内核需 GPT 支持才能读取分区表
@@ -1884,6 +2052,16 @@ diff_count=$((src_total - ym_total))
 info "Baseline (y/m): $src_total"
 info "Final (y/m):    $ym_total  (=y: $y_count, =m: $m_count)"
 info "净减少:          $diff_count 项"
+
+# ---------- 生成文件 y/m 统计（最终核对） ----------
+gen_y=$(grep -cE '^CONFIG_[A-Za-z0-9_]+=y$'  "$DST" || true)
+gen_m=$(grep -cE '^CONFIG_[A-Za-z0-9_]+=m$'  "$DST" || true)
+echo ""
+ok "生成的 config 文件统计：$DST"
+echo "  裁剪模式：${TRIM_MODE}  (Docker=${ENABLE_DOCKER}, eBPF=${ENABLE_EBPF})"
+echo "  =y 项：$gen_y"
+echo "  =m 项：$gen_m"
+echo "  合计 ：$((gen_y + gen_m))"
 
 echo ""
 info "下一步："

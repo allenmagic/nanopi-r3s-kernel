@@ -13,3 +13,6 @@ trim-r3s.log
 # Generated reports
 TRIM_REPORT.md
 memory/
+
+# Trim mode marker (written by trim-r3s-kernel.sh, read by extension hook)
+.trim-mode
