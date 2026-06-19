@@ -24,6 +24,7 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 	if [[ -z "$trim_mode" ]]; then
 		local mode_file
 		for mode_file in \
+			"$(dirname "$(dirname "${BASH_SOURCE[0]}")")/.trim-mode" \
 			"$(dirname "${BASH_SOURCE[0]}")/.trim-mode" \
 			"./userpatches/.trim-mode" \
 			"./.trim-mode"; do

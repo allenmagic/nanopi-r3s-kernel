@@ -14,5 +14,6 @@ trim-r3s.log
 TRIM_REPORT.md
 memory/
 
-# Trim mode marker (written by trim-r3s-kernel.sh, read by extension hook)
-.trim-mode
+# .trim-mode — 裁剪模式标记，trim-r3s-kernel.sh 写入，extensions/nanopir3s-kconfig.sh 读取
+# 必须提交到 git，否则 git clone 部署到 Armbian userpatches/ 时缺失，
+# 扩展钩子 fallback 到 minimal 模式，docker/eBPF 配置全部被误关
