@@ -32,6 +32,10 @@ jobs:
     env:
       KERNEL_MODE: ${{ inputs.kernel_mode }}
     steps:
+      # 本 repo checkout（Copy self 步骤需要 ${{ github.workspace }} 有内容）
+      - name: Checkout
+        uses: actions/checkout@v6
+
       # ----------------------------------------------------------
       # 1. 克隆 Armbian build
       # ----------------------------------------------------------
