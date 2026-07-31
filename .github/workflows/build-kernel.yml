@@ -17,6 +17,8 @@ permissions:
 
 env:
   ARMBIAN_BUILD_DIR: /tmp/armbian-build
+  # ccache 上限 2G/模式（4 模式 ≈ 8GB + 源码 1GB，压在 GitHub 免费 10GB 缓存额度内）
+  CCACHE_MAXSIZE: 2G
 
 jobs:
   # 统一 release tag（所有模式发布到同一个 release，资产按模式名区分）
@@ -69,6 +71,21 @@ jobs:
           git log -1 --oneline
 
       # ----------------------------------------------------------
+      # 1b. 恢复编译缓存（ccache + 内核源码），clone 之后执行
+      #     key 用 run_id 唯一（actions/cache 同 key 不覆盖保存），
+      #     restore-keys 按模式前缀取最近一次缓存
+      # ----------------------------------------------------------
+      - name: Restore Armbian build cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ env.ARMBIAN_BUILD_DIR }}/cache/ccache
+            ${{ env.ARMBIAN_BUILD_DIR }}/cache/sources
+          key: armbian-cache-${{ matrix.kernel_mode }}-${{ github.run_id }}
+          restore-keys: |
+            armbian-cache-${{ matrix.kernel_mode }}-
+
+      # ----------------------------------------------------------
       # 2. 注入本 repo（裁剪 config + 钩子）为 Armbian userpatches
       # ----------------------------------------------------------
       - name: Copy self to Armbian userpatches
@@ -105,11 +122,6 @@ jobs:
           cd "${{ env.ARMBIAN_BUILD_DIR }}"
           ./compile.sh kernel nanopir3s
 
-      - name: Build u-boot
-        run: |
-          cd "${{ env.ARMBIAN_BUILD_DIR }}"
-          ./compile.sh uboot nanopir3s
-
       - name: Show deb artifacts
         run: |
           echo "=== output/debs/ ==="
@@ -117,7 +129,15 @@ jobs:
 
       # ----------------------------------------------------------
       # 4. dpkg-deb 提取并打包 boot bundle
+      #    u-boot 由独立的 build-uboot job 编译一次，此处下载共享
+      #    （u-boot 编译 ~10min，远早于本 job 内核编译完成，artifact 必已就绪）
       # ----------------------------------------------------------
+      - name: Download u-boot artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: uboot-rk3566
+          path: uboot-artifact
+
       - name: Extract and package boot artifacts
         id: package
         run: |
@@ -153,13 +173,9 @@ jobs:
           echo "  -> $(basename ${DTB_FILE})"
           cp "${DTB_FILE}" "${BUNDLE_DIR}/boot/dtb/rockchip/rk3566-nanopi-r3s.dtb"
 
-          # --- linux-u-boot（u-boot-rockchip.bin）---
-          UBOOT_DEB=$(ls "${DEBS_DIR}"/linux-u-boot-*-current_*.deb 2>/dev/null | head -1)
-          [ -n "${UBOOT_DEB}" ] || { echo "错误: 未找到 u-boot deb"; ls "${DEBS_DIR}"; exit 1; }
-          echo "=== 提取 u-boot: $(basename ${UBOOT_DEB}) ==="
-          dpkg-deb -x "${UBOOT_DEB}" "${EXTRACT_DIR}/uboot"
-          UBOOT_BIN=$(find "${EXTRACT_DIR}/uboot" -name "u-boot-rockchip.bin" | head -1)
-          [ -n "${UBOOT_BIN}" ] || { echo "错误: 未找到 u-boot-rockchip.bin"; find "${EXTRACT_DIR}/uboot" -type f; exit 1; }
+          # --- linux-u-boot（共享 artifact，build-uboot job 编译一次）---
+          UBOOT_BIN="uboot-artifact/u-boot-rockchip.bin"
+          [ -f "${UBOOT_BIN}" ] || { echo "错误: 未找到 u-boot-rockchip.bin（build-uboot artifact）"; ls uboot-artifact/; exit 1; }
           echo "  -> u-boot-rockchip.bin ($(du -h ${UBOOT_BIN} | cut -f1))"
           cp "${UBOOT_BIN}" "${BUNDLE_DIR}/u-boot-rockchip.bin"
 
@@ -198,6 +214,74 @@ jobs:
         with:
           name: armbian-boot-rk3566-${{ matrix.kernel_mode }}
           path: ${{ steps.package.outputs.boot_pkg }}
+          if-no-files-found: error
+
+  # ============================================================
+  # u-boot：与裁剪模式无关，独立 job 编译一次，4 个 kernel job 共享
+  #   （编译 ~10min，远早于 kernel job 完成，kernel 打包时 artifact 已就绪）
+  # ============================================================
+  build-uboot:
+    needs: prepare
+    runs-on: ubuntu-24.04-arm
+    if: github.event.repository.owner.id == github.event.sender.id
+    env:
+      KERNEL_MODE: minimal   # u-boot 与裁剪模式无关
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y software-properties-common
+
+      - name: Clone Armbian build repo
+        run: |
+          for i in 1 2 3; do
+            git clone --depth=1 -b main \
+              "https://github.com/armbian/build.git" \
+              "${{ env.ARMBIAN_BUILD_DIR }}" && break || {
+              echo "Clone attempt $i failed, retrying in $((i * 5)) seconds..."
+              sleep $((i * 5))
+              rm -rf "${{ env.ARMBIAN_BUILD_DIR }}"
+            }
+          done
+
+      - name: Copy self to Armbian userpatches
+        run: |
+          cp -a "${{ github.workspace }}" "${{ env.ARMBIAN_BUILD_DIR }}/userpatches"
+          cd "${{ env.ARMBIAN_BUILD_DIR }}"
+          mkdir -p userpatches/{atf,crust,kernel,misc,overlay,u-boot}
+          echo "${{ env.KERNEL_MODE }}" > userpatches/.trim-mode
+          echo "R3S_TRIM_MODE=${{ env.KERNEL_MODE }}" >> "$GITHUB_ENV"
+          echo "=== 裁剪模式（u-boot 构建用）: ${{ env.KERNEL_MODE }} ==="
+
+      - name: Build u-boot
+        run: |
+          cd "${{ env.ARMBIAN_BUILD_DIR }}"
+          ./compile.sh uboot nanopir3s
+
+      - name: Extract u-boot binary
+        run: |
+          set -e
+          DEBS_DIR="${{ env.ARMBIAN_BUILD_DIR }}/output/debs"
+          echo "=== output/debs/ ==="
+          ls -lh "${DEBS_DIR}" || true
+          UBOOT_DEB=$(ls "${DEBS_DIR}"/linux-u-boot-*-current_*.deb 2>/dev/null | head -1)
+          [ -n "${UBOOT_DEB}" ] || { echo "错误: 未找到 u-boot deb"; exit 1; }
+          echo "=== 提取 u-boot: $(basename ${UBOOT_DEB}) ==="
+          dpkg-deb -x "${UBOOT_DEB}" /tmp/uboot-extract
+          UBOOT_BIN=$(find /tmp/uboot-extract -name "u-boot-rockchip.bin" | head -1)
+          [ -n "${UBOOT_BIN}" ] || { echo "错误: 未找到 u-boot-rockchip.bin"; find /tmp/uboot-extract -type f; exit 1; }
+          mkdir -p artifact
+          cp "${UBOOT_BIN}" artifact/u-boot-rockchip.bin
+          ls -lh artifact/
+
+      - name: Upload u-boot artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: uboot-rk3566
+          path: artifact/u-boot-rockchip.bin
           if-no-files-found: error
 
   # ============================================================
