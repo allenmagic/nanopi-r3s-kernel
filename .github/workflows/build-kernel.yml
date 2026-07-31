@@ -229,4 +229,6 @@ jobs:
           files: dist/*
           draft: false
           prerelease: false
-          update_release: true
+          # v3 无 update_release 参数（v2 移除）：已存在的同名 release 自动更新，
+          # overwrite_files 控制同名资产覆盖（同一天重复构建时）
+          overwrite_files: true
