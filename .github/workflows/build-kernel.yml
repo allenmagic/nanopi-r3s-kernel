@@ -19,7 +19,19 @@ env:
   ARMBIAN_BUILD_DIR: /tmp/armbian-build
 
 jobs:
+  # 统一 release tag（所有模式发布到同一个 release，资产按模式名区分）
+  prepare:
+    runs-on: ubuntu-24.04
+    if: github.event.repository.owner.id == github.event.sender.id
+    outputs:
+      release_tag: ${{ steps.tag.outputs.release_tag }}
+    steps:
+      - name: Resolve release tag
+        id: tag
+        run: echo "release_tag=kernel-$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
   build-kernel:
+    needs: prepare
     runs-on: ubuntu-24.04-arm
     if: github.event.repository.owner.id == github.event.sender.id
     strategy:
@@ -179,12 +191,10 @@ jobs:
           echo "boot_pkg=${BOOT_PKG}" >> "$GITHUB_OUTPUT"
 
       # ----------------------------------------------------------
-      # 5. 上传 artifact + 发布 Release
+      # 5. 上传 artifact + 发布到统一 Release
+      #    所有模式发布到同一个 tag（kernel-YYYYMMDD），资产按
+      #    armbian-boot-rk3566-<mode>.tar.gz 区分，img 构建按模式下载
       # ----------------------------------------------------------
-      - name: Resolve release tag
-        id: tag
-        run: echo "release_tag=kernel-${{ matrix.kernel_mode }}-$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
-
       - name: Upload boot artifact
         uses: actions/upload-artifact@v4
         with:
@@ -192,14 +202,11 @@ jobs:
           path: ${{ steps.package.outputs.boot_pkg }}
           if-no-files-found: error
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v3
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload to release (kernel-${{ matrix.kernel_mode }})
+        uses: svenstaro/upload-release-action@v2
         with:
-          tag_name: ${{ steps.tag.outputs.release_tag }}
-          name: "Trimmed Kernel ${{ matrix.kernel_mode }} ${{ steps.tag.outputs.release_tag }}"
-          files: ${{ steps.package.outputs.boot_pkg }}
-          draft: false
-          prerelease: false
-          update_release: true
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ${{ steps.package.outputs.boot_pkg }}
+          asset_name: ${{ steps.package.outputs.boot_pkg }}
+          tag: ${{ needs.prepare.outputs.release_tag }}
+          overwrite: true
