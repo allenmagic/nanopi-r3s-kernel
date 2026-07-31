@@ -72,8 +72,8 @@ jobs:
 
       # ----------------------------------------------------------
       # 1b. 恢复编译缓存（ccache + 内核源码），clone 之后执行
-      #     key 用 run_id 唯一（actions/cache 同 key 不覆盖保存），
-      #     restore-keys 按模式前缀取最近一次缓存
+      #     key 按日期：同一天多次 run 命中 primary 不重复保存（防堆积），
+      #     跨天滚动新 key，旧条目留 1-2 天（超 7 天自动清除）
       # ----------------------------------------------------------
       - name: Restore Armbian build cache
         uses: actions/cache@v6
@@ -81,7 +81,7 @@ jobs:
           path: |
             ${{ env.ARMBIAN_BUILD_DIR }}/cache/ccache
             ${{ env.ARMBIAN_BUILD_DIR }}/cache/sources
-          key: armbian-cache-${{ matrix.kernel_mode }}-${{ github.run_id }}
+          key: armbian-cache-${{ matrix.kernel_mode }}-$(date +%Y%m%d)
           restore-keys: |
             armbian-cache-${{ matrix.kernel_mode }}-
 
