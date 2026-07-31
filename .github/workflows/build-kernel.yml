@@ -191,9 +191,7 @@ jobs:
           echo "boot_pkg=${BOOT_PKG}" >> "$GITHUB_OUTPUT"
 
       # ----------------------------------------------------------
-      # 5. 上传 artifact + 发布到统一 Release
-      #    所有模式发布到同一个 tag（kernel-YYYYMMDD），资产按
-      #    armbian-boot-rk3566-<mode>.tar.gz 区分，img 构建按模式下载
+      # 5. 上传 artifact（发布由独立 release job 统一处理）
       # ----------------------------------------------------------
       - name: Upload boot artifact
         uses: actions/upload-artifact@v4
@@ -202,11 +200,33 @@ jobs:
           path: ${{ steps.package.outputs.boot_pkg }}
           if-no-files-found: error
 
-      - name: Upload to release (kernel-${{ matrix.kernel_mode }})
-        uses: svenstaro/upload-release-action@v2
+  # ============================================================
+  # 发布：全部模式编译成功后，统一上传到同一个 Release
+  #   tag: kernel-YYYYMMDD，资产 armbian-boot-rk3566-<mode>.tar.gz
+  #   任一模式编译失败则本 job 自动跳过（不发布残缺 release）
+  # ============================================================
+  release:
+    needs: [prepare, build-kernel]
+    runs-on: ubuntu-24.04
+    if: github.event.repository.owner.id == github.event.sender.id
+    steps:
+      - name: Download all boot artifacts
+        uses: actions/download-artifact@v4
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: ${{ steps.package.outputs.boot_pkg }}
-          asset_name: ${{ steps.package.outputs.boot_pkg }}
-          tag: ${{ needs.prepare.outputs.release_tag }}
-          overwrite: true
+          path: dist
+          merge-multiple: true
+
+      - name: Show artifacts
+        run: ls -lh dist/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ needs.prepare.outputs.release_tag }}
+          name: "Trimmed Kernel ${{ needs.prepare.outputs.release_tag }}"
+          files: dist/*
+          draft: false
+          prerelease: false
+          update_release: true
