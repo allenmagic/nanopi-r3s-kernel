@@ -1,4 +1,4 @@
-# r3s-kernel-trim
+# nanopi-r3s-kernel
 
 NanoPi R3S 路由器专用最小化内核配置工具链。
 
@@ -7,7 +7,7 @@ NanoPi R3S 路由器专用最小化内核配置工具链。
 ## 目录结构
 
 ```
-r3s-kernel-trim/
+nanopi-r3s-kernel/
 ├── trim-r3s-kernel.sh                  # 内核配置裁剪脚本（A-Z + ENABLE_DOCKER/EBPF 守卫）
 ├── olddefconfig-r3s.sh                 # Kconfig 依赖解析（make olddefconfig 封装）
 ├── config-nanopir3s.conf               # R3S 构建参数（Armbian compile.sh 用）
@@ -38,8 +38,8 @@ r3s-kernel-trim/
 在将配置部署到 Armbian 之前，可先在本 repo 内按需裁剪：
 
 ```bash
-git clone https://github.com/YOURNAME/r3s-kernel-trim
-cd r3s-kernel-trim
+git clone https://github.com/YOURNAME/nanopi-r3s-kernel
+cd nanopi-r3s-kernel
 
 # 默认 minimal 模式（纯路由器，860 y/m，最大裁剪）
 ./trim-r3s-kernel.sh
@@ -77,7 +77,7 @@ cd build
 
 # 2. 将本 repo 作为 userpatches
 rm -rf userpatches
-git clone https://github.com/YOURNAME/r3s-kernel-trim userpatches
+git clone https://github.com/YOURNAME/nanopi-r3s-kernel userpatches
 
 # 3. 确保空骨架目录存在（Armbian 约定）
 mkdir -p userpatches/{atf,crust,kernel,misc,overlay,u-boot}
