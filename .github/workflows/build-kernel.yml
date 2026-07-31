@@ -1,0 +1,203 @@
+# Build NanoPi R3S Trimmed Kernel Bundle → GitHub Release
+# 独立构建裁剪内核 + u-boot + dtb + modules，打包为 boot bundle 发布到 Release，
+# 供 nanopi-r3s-img 的 build_img workflow 直接下载引用（无需每次现场编译 Armbian）。
+#
+# Release 资产命名：armbian-boot-rk3566-<mode>.tar.gz
+# Release tag：kernel-<mode>-YYYYMMDD（如 kernel-minimal-20260731）
+#
+# 用法：手动触发 workflow_dispatch，选择 kernel_mode。
+
+name: Build Trimmed Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_mode:
+        description: "内核裁剪模式"
+        type: choice
+        required: true
+        default: minimal
+        options: [minimal, docker, ebpf, full]
+
+permissions:
+  contents: write
+
+env:
+  ARMBIAN_BUILD_DIR: /tmp/armbian-build
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-24.04-arm
+    if: github.event.repository.owner.id == github.event.sender.id
+    env:
+      KERNEL_MODE: ${{ inputs.kernel_mode }}
+    steps:
+      # ----------------------------------------------------------
+      # 1. 克隆 Armbian build
+      # ----------------------------------------------------------
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y software-properties-common
+
+      - name: Clone Armbian build repo
+        run: |
+          for i in 1 2 3; do
+            git clone --depth=1 -b main \
+              "https://github.com/armbian/build.git" \
+              "${{ env.ARMBIAN_BUILD_DIR }}" && break || {
+              echo "Clone attempt $i failed, retrying in $((i * 5)) seconds..."
+              sleep $((i * 5))
+              rm -rf "${{ env.ARMBIAN_BUILD_DIR }}"
+            }
+          done
+          cd "${{ env.ARMBIAN_BUILD_DIR }}"
+          git log -1 --oneline
+
+      # ----------------------------------------------------------
+      # 2. 注入本 repo（裁剪 config + 钩子）为 Armbian userpatches
+      # ----------------------------------------------------------
+      - name: Copy self to Armbian userpatches
+        run: |
+          cp -a "${{ github.workspace }}" "${{ env.ARMBIAN_BUILD_DIR }}/userpatches"
+
+          cd "${{ env.ARMBIAN_BUILD_DIR }}"
+
+          # 验证关键文件存在
+          if [ ! -f "userpatches/config-nanopir3s.conf" ]; then
+            echo "错误: config-nanopir3s.conf 不存在"
+            ls -la userpatches/ || true
+            exit 1
+          fi
+
+          # 骨架目录（Armbian 约定）
+          mkdir -p userpatches/{atf,crust,kernel,misc,overlay,u-boot}
+
+          # 双保险传递 kernel_mode：
+          # 1) .trim-mode 文件（扩展钩子读取）
+          echo "${{ env.KERNEL_MODE }}" > userpatches/.trim-mode
+          # 2) 环境变量（trim-r3s-kernel.sh 和钩子均可读取）
+          echo "R3S_TRIM_MODE=${{ env.KERNEL_MODE }}" >> "$GITHUB_ENV"
+
+          echo "=== userpatches 内容 ==="
+          ls -la userpatches/
+          echo "=== 裁剪模式: ${{ env.KERNEL_MODE }} ==="
+
+      # ----------------------------------------------------------
+      # 3. 编译内核 + u-boot
+      # ----------------------------------------------------------
+      - name: Build kernel
+        run: |
+          cd "${{ env.ARMBIAN_BUILD_DIR }}"
+          ./compile.sh kernel nanopir3s
+
+      - name: Build u-boot
+        run: |
+          cd "${{ env.ARMBIAN_BUILD_DIR }}"
+          ./compile.sh uboot nanopir3s
+
+      - name: Show deb artifacts
+        run: |
+          echo "=== output/debs/ ==="
+          ls -lh "${{ env.ARMBIAN_BUILD_DIR }}/output/debs/" || true
+
+      # ----------------------------------------------------------
+      # 4. dpkg-deb 提取并打包 boot bundle
+      # ----------------------------------------------------------
+      - name: Extract and package boot artifacts
+        id: package
+        run: |
+          set -e
+          DEBS_DIR="${{ env.ARMBIAN_BUILD_DIR }}/output/debs"
+          EXTRACT_DIR="/tmp/boot-extract"
+          BUNDLE_DIR="/tmp/boot-bundle"
+          rm -rf "${EXTRACT_DIR}" "${BUNDLE_DIR}"
+          mkdir -p "${EXTRACT_DIR}" \
+                   "${BUNDLE_DIR}/boot/extlinux" \
+                   "${BUNDLE_DIR}/boot/dtb/rockchip" \
+                   "${BUNDLE_DIR}/lib"
+
+          # --- linux-image（vmlinuz + modules）---
+          IMAGE_DEB=$(ls "${DEBS_DIR}"/linux-image-current-rockchip64_*.deb 2>/dev/null | head -1)
+          [ -n "${IMAGE_DEB}" ] || { echo "错误: 未找到 linux-image deb"; ls "${DEBS_DIR}"; exit 1; }
+          echo "=== 提取 linux-image: $(basename ${IMAGE_DEB}) ==="
+          dpkg-deb -x "${IMAGE_DEB}" "${EXTRACT_DIR}/image"
+          cp -a "${EXTRACT_DIR}/image/boot/"* "${BUNDLE_DIR}/boot/"
+          mkdir -p "${BUNDLE_DIR}/lib/modules"
+          cp -a "${EXTRACT_DIR}/image/lib/modules/"* "${BUNDLE_DIR}/lib/modules/"
+
+          # --- linux-dtb（rk3566-nanopi-r3s.dtb）---
+          DTB_DEB=$(ls "${DEBS_DIR}"/linux-dtb-current-rockchip64_*.deb 2>/dev/null | head -1)
+          if [ -n "${DTB_DEB}" ]; then
+            echo "=== 提取 DTB: $(basename ${DTB_DEB}) ==="
+            dpkg-deb -x "${DTB_DEB}" "${EXTRACT_DIR}/dtb"
+            DTB_FILE=$(find "${EXTRACT_DIR}/dtb" -name "rk3566-nanopi-r3s.dtb" | head -1)
+          else
+            DTB_FILE=$(find "${EXTRACT_DIR}/image" -name "rk3566-nanopi-r3s.dtb" | head -1)
+          fi
+          [ -n "${DTB_FILE}" ] || { echo "错误: 未找到 rk3566-nanopi-r3s.dtb"; exit 1; }
+          echo "  -> $(basename ${DTB_FILE})"
+          cp "${DTB_FILE}" "${BUNDLE_DIR}/boot/dtb/rockchip/rk3566-nanopi-r3s.dtb"
+
+          # --- linux-u-boot（u-boot-rockchip.bin）---
+          UBOOT_DEB=$(ls "${DEBS_DIR}"/linux-u-boot-*-current_*.deb 2>/dev/null | head -1)
+          [ -n "${UBOOT_DEB}" ] || { echo "错误: 未找到 u-boot deb"; ls "${DEBS_DIR}"; exit 1; }
+          echo "=== 提取 u-boot: $(basename ${UBOOT_DEB}) ==="
+          dpkg-deb -x "${UBOOT_DEB}" "${EXTRACT_DIR}/uboot"
+          UBOOT_BIN=$(find "${EXTRACT_DIR}/uboot" -name "u-boot-rockchip.bin" | head -1)
+          [ -n "${UBOOT_BIN}" ] || { echo "错误: 未找到 u-boot-rockchip.bin"; find "${EXTRACT_DIR}/uboot" -type f; exit 1; }
+          echo "  -> u-boot-rockchip.bin ($(du -h ${UBOOT_BIN} | cut -f1))"
+          cp "${UBOOT_BIN}" "${BUNDLE_DIR}/u-boot-rockchip.bin"
+
+          # --- extlinux.conf ---
+          VMLINUZ=$(ls "${BUNDLE_DIR}/boot"/vmlinuz-* 2>/dev/null | head -1)
+          [ -n "${VMLINUZ}" ] || { echo "错误: 未找到 vmlinuz"; ls "${BUNDLE_DIR}/boot/"; exit 1; }
+          KERNEL_FILE="$(basename ${VMLINUZ})"
+          echo "=== 生成 extlinux.conf (KERNEL=${KERNEL_FILE}) ==="
+          cat > "${BUNDLE_DIR}/boot/extlinux/extlinux.conf" << EXTCONF
+          TIMEOUT 10
+          DEFAULT linux
+
+          MENU TITLE NanoPi R3S Router
+
+          LABEL linux
+              MENU LABEL Linux (default)
+              KERNEL /boot/${KERNEL_FILE}
+              FDT /boot/dtb/rockchip/rk3566-nanopi-r3s.dtb
+              APPEND root=/dev/mmcblk1p1 rootwait rw rootfstype=ext4 console=ttyS2,1500000 console=tty1 net.ifnames=0 loglevel=7
+          EXTCONF
+
+          # --- 统一所有权并打包 ---
+          sudo chown -R 0:0 "${BUNDLE_DIR}"
+          BOOT_PKG="armbian-boot-rk3566-${{ env.KERNEL_MODE }}.tar.gz"
+          tar czf "${BOOT_PKG}" \
+            --owner=0 --group=0 --numeric-owner --mtime='@0' --sort=name \
+            -C "${BUNDLE_DIR}" .
+          ls -lh "${BOOT_PKG}"
+          echo "boot_pkg=${BOOT_PKG}" >> "$GITHUB_OUTPUT"
+
+      # ----------------------------------------------------------
+      # 5. 上传 artifact + 发布 Release
+      # ----------------------------------------------------------
+      - name: Resolve release tag
+        id: tag
+        run: echo "release_tag=kernel-${{ inputs.kernel_mode }}-$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload boot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: armbian-boot-rk3566-${{ inputs.kernel_mode }}
+          path: ${{ steps.package.outputs.boot_pkg }}
+          if-no-files-found: error
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          name: "Trimmed Kernel ${{ inputs.kernel_mode }} ${{ steps.tag.outputs.release_tag }}"
+          files: ${{ steps.package.outputs.boot_pkg }}
+          draft: false
+          prerelease: false
+          update_release: true
