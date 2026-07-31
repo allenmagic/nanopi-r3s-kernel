@@ -7,7 +7,7 @@
 #   Release tag：kernel-<mode>-YYYYMMDD（如 kernel-minimal-20260731）
 # img 构建时按 kernel_mode 下载对应模式的资产。
 
-name: Build Trimmed Kernel
+name: Build All Trimmed Kernels
 
 on:
   workflow_dispatch: {}
