@@ -2,22 +2,15 @@
 # 独立构建裁剪内核 + u-boot + dtb + modules，打包为 boot bundle 发布到 Release，
 # 供 nanopi-r3s-img 的 build_img workflow 直接下载引用（无需每次现场编译 Armbian）。
 #
-# Release 资产命名：armbian-boot-rk3566-<mode>.tar.gz
-# Release tag：kernel-<mode>-YYYYMMDD（如 kernel-minimal-20260731）
-#
-# 用法：手动触发 workflow_dispatch，选择 kernel_mode。
+# 一次触发编译全部 4 种裁剪模式（matrix 并行），分别发布：
+#   Release 资产命名：armbian-boot-rk3566-<mode>.tar.gz
+#   Release tag：kernel-<mode>-YYYYMMDD（如 kernel-minimal-20260731）
+# img 构建时按 kernel_mode 下载对应模式的资产。
 
 name: Build Trimmed Kernel
 
 on:
-  workflow_dispatch:
-    inputs:
-      kernel_mode:
-        description: "内核裁剪模式"
-        type: choice
-        required: true
-        default: minimal
-        options: [minimal, docker, ebpf, full]
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -29,8 +22,13 @@ jobs:
   build-kernel:
     runs-on: ubuntu-24.04-arm
     if: github.event.repository.owner.id == github.event.sender.id
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel_mode: [minimal, docker, ebpf, full]
+    name: build-kernel-${{ matrix.kernel_mode }}
     env:
-      KERNEL_MODE: ${{ inputs.kernel_mode }}
+      KERNEL_MODE: ${{ matrix.kernel_mode }}
     steps:
       # 本 repo checkout（Copy self 步骤需要 ${{ github.workspace }} 有内容）
       - name: Checkout
@@ -185,12 +183,12 @@ jobs:
       # ----------------------------------------------------------
       - name: Resolve release tag
         id: tag
-        run: echo "release_tag=kernel-${{ inputs.kernel_mode }}-$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
+        run: echo "release_tag=kernel-${{ matrix.kernel_mode }}-$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
 
       - name: Upload boot artifact
         uses: actions/upload-artifact@v4
         with:
-          name: armbian-boot-rk3566-${{ inputs.kernel_mode }}
+          name: armbian-boot-rk3566-${{ matrix.kernel_mode }}
           path: ${{ steps.package.outputs.boot_pkg }}
           if-no-files-found: error
 
@@ -200,7 +198,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ steps.tag.outputs.release_tag }}
-          name: "Trimmed Kernel ${{ inputs.kernel_mode }} ${{ steps.tag.outputs.release_tag }}"
+          name: "Trimmed Kernel ${{ matrix.kernel_mode }} ${{ steps.tag.outputs.release_tag }}"
           files: ${{ steps.package.outputs.boot_pkg }}
           draft: false
           prerelease: false
