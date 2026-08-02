@@ -769,8 +769,8 @@ set_m PPPOE
 unset_k PPP_MULTILINK  # 单WAN不需要多链路
 set_y IPV6                   # WireGuard / cloudflared 可能用
 
-# R8169 网卡
-set_m R8169
+# R8169 网卡（PCIe RTL8111H，内置编译确保无模块依赖即可用）
+set_y R8169
 set_y NET_VENDOR_REALTEK
 
 # GMAC (RK3566 内置)
