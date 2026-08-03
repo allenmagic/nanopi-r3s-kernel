@@ -933,6 +933,33 @@ opts_n+=("MULTIUSER")                 # OpenRC单用户不需
 				sed -i "/^CONFIG_${item}=/d; /^# CONFIG_${item} is not set/d" .config
 				echo "# CONFIG_${item} is not set" >> .config
 			done
+
+			# =========================================================================
+			# 4. 强制路由器核心模块为 =y（对抗 Armbian/olddefconfig 降级为 =m）
+			# =========================================================================
+			display_alert "${EXTENSION}" "Forcing router core modules to =y" "info"
+			local -a force_y=(
+				# netfilter/NAT 核心
+				NETFILTER NF_CONNTRACK NF_NAT
+				NF_DEFRAG_IPV4 NF_DEFRAG_IPV6
+				# nftables 框架
+				NF_TABLES NF_TABLES_INET NF_TABLES_IPV4 NF_TABLES_IPV6
+				# nftables 功能
+				NFT_CT NFT_NAT NFT_MASQ NFT_REDIR
+				NFT_REJECT NFT_REJECT_INET NFT_REJECT_IPV4 NFT_REJECT_IPV6
+				NFT_LOG NFT_LIMIT
+				# flow offload
+				NFT_FLOW_OFFLOAD NF_FLOW_TABLE NF_FLOW_TABLE_INET
+				# IP层
+				NF_REJECT_IPV4 NF_REJECT_IPV6
+				NF_LOG_IPV4 NF_LOG_IPV6 NF_LOG_SYSLOG
+				# VPN/网络工具
+				TUN WIREGUARD PPP PPPOE VLAN_8021Q IPV6
+			)
+			for item in "${force_y[@]}"; do
+				sed -i "/^CONFIG_${item}=/d; /^# CONFIG_${item} is not set/d" .config
+				echo "CONFIG_${item}=y" >> .config
+			done
 		fi
 	kernel_config_modifying_hashes+=("nanopir3s_undo_armbian_ebpf")
 	return 0
