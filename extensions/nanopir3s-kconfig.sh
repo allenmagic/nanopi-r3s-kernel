@@ -925,59 +925,6 @@ opts_n+=("MULTIUSER")                 # OpenRC单用户不需
 		opts_n=("${filtered_n[@]}")
 	fi
 
-
-		# =========================================================================
-		# 3. 直接修改 .config（绕过 opts数组, 对抗 olddefconfig default y/select）
-		# =========================================================================
-		if [[ -f .config ]]; then
-			display_alert "${EXTENSION}" "Directly disabling items in .config" "info"
-			# 合并 remove_from_y + remove_from_m + opts_n 全集
-			local -a all_disable=()
-			all_disable+=("${remove_from_y[@]}")
-			all_disable+=("${remove_from_m[@]}")
-			all_disable+=("${opts_n[@]}")
-			# 去重 + 跳过 keep_set（docker/ebpf 保护项，严禁直写 disable）
-			local -A seen=()
-			local -a unique_disable=()
-			for item in "${all_disable[@]}"; do
-				[[ -n "${seen[$item]}" ]] && continue
-				_r3s_kept "$item" && continue
-				seen[$item]=1
-				unique_disable+=("$item")
-			done
-			# 直接用 sed 写入 # CONFIG_X is not set
-			for item in "${unique_disable[@]}"; do
-				sed -i "/^CONFIG_${item}=/d; /^# CONFIG_${item} is not set/d" .config
-				echo "# CONFIG_${item} is not set" >> .config
-			done
-
-			# =========================================================================
-			# 4. 强制路由器核心模块为 =y（对抗 Armbian/olddefconfig 降级为 =m）
-			# =========================================================================
-			display_alert "${EXTENSION}" "Forcing router core modules to =y" "info"
-			local -a force_y=(
-				# netfilter/NAT 核心
-				NETFILTER NF_CONNTRACK NF_NAT
-				NF_DEFRAG_IPV4 NF_DEFRAG_IPV6
-				# nftables 框架
-				NF_TABLES NF_TABLES_INET NF_TABLES_IPV4 NF_TABLES_IPV6
-				# nftables 功能
-				NFT_CT NFT_NAT NFT_MASQ NFT_REDIR
-				NFT_REJECT NFT_REJECT_INET NFT_REJECT_IPV4 NFT_REJECT_IPV6
-				NFT_LOG NFT_LIMIT
-				# flow offload
-				NFT_FLOW_OFFLOAD NF_FLOW_TABLE NF_FLOW_TABLE_INET
-				# IP层
-				NF_REJECT_IPV4 NF_REJECT_IPV6
-				NF_LOG_IPV4 NF_LOG_IPV6 NF_LOG_SYSLOG
-				# VPN/网络工具
-				TUN WIREGUARD PPP PPPOE VLAN_8021Q IPV6
-			)
-			for item in "${force_y[@]}"; do
-				sed -i "/^CONFIG_${item}=/d; /^# CONFIG_${item} is not set/d" .config
-				echo "CONFIG_${item}=y" >> .config
-			done
-		fi
 	kernel_config_modifying_hashes+=("nanopir3s_undo_armbian_ebpf")
 	return 0
 }
