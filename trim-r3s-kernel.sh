@@ -16,7 +16,7 @@ set -euo pipefail
 # ---------- 路径 ----------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="${SCRIPT_DIR}/samples/linux-rockchip64-current.config.baseline"
-DST="${SCRIPT_DIR}/linux-rockchip64-current.config"
+DST="${SCRIPT_DIR}/kernel/rockchip64-current/linux-rockchip64-current.config"
 
 # ---------- 日志 ----------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
