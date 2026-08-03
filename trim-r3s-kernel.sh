@@ -731,23 +731,48 @@ unset_k RD_LZMA
 # =============================================================================
 # I. nftables 全套确认（红线，防御性 set_m）
 # =============================================================================
-info "[I] nftables 全套确认"
+info "[I] nftables 全套确认（路由器核心功能编译进内核）"
 
-set_m NF_TABLES
+# 路由器核心基础：连接跟踪和 NAT 框架（必须=y）
+set_y NETFILTER
+set_y NF_CONNTRACK
+set_y NF_NAT
+
+# 路由器核心：nftables 框架和 NAT 组件全部编译进内核（=y）
+set_y NF_TABLES
 set_y NF_TABLES_INET
 set_y NF_TABLES_IPV4
 set_y NF_TABLES_IPV6
-set_m NFT_CT
-set_m NFT_NAT
-set_m NFT_MASQ
-set_m NFT_REDIR
-	set_m NFT_FLOW_OFFLOAD       # 软路由软件fast-path
-	set_m NF_FLOW_TABLE
-	set_m NF_FLOW_TABLE_INET
-set_m NFT_REJECT
-set_m NFT_REJECT_INET
-set_m NFT_LOG
-set_m NFT_LIMIT
+set_y NFT_CT
+set_y NFT_NAT
+set_y NFT_MASQ
+set_y NFT_REDIR
+set_y NFT_FLOW_OFFLOAD       # 软路由软件fast-path（性能核心，编译进内核）
+set_y NF_FLOW_TABLE
+set_y NF_FLOW_TABLE_INET
+
+# nftables 常用功能：拒绝、日志、限速（编译进内核）
+set_y NFT_REJECT
+set_y NFT_REJECT_INET
+set_y NFT_LOG
+set_y NFT_LIMIT
+
+# IP分片重组（conntrack必需，编译进内核）
+set_y NF_DEFRAG_IPV4
+set_y NF_DEFRAG_IPV6
+
+# IP层拒绝和日志
+set_y NF_REJECT_IPV4
+set_y NF_REJECT_IPV6
+set_y NF_LOG_IPV4
+set_y NF_LOG_IPV6
+set_y NF_LOG_SYSLOG
+
+# IPv4/IPv6 特定的nftables拒绝模块
+set_y NFT_REJECT_IPV4
+set_y NFT_REJECT_IPV6
+
+# sing-box 相关（保持模块方式，按需加载）
 set_m NFT_QUOTA
 set_m NFT_HASH
 set_m NFT_FIB
@@ -762,11 +787,13 @@ set_m NFT_SOCKET             # sing-box socket 匹配需要
 # =============================================================================
 info "[J] 用户态工具红线确认"
 
-set_m TUN
-set_m WIREGUARD
-set_m PPP
-set_m PPPOE
-unset_k PPP_MULTILINK  # 单WAN不需要多链路
+# 核心网络功能（编译进内核）
+set_y TUN                    # sing-box/WireGuard/VPN 必需
+set_y WIREGUARD              # WireGuard VPN
+set_y PPP                    # PPP 协议栈
+set_y PPPOE                  # PPPoE 拨号
+set_y VLAN_8021Q             # VLAN 功能
+unset_k PPP_MULTILINK        # 单WAN不需要多链路
 set_y IPV6                   # WireGuard / cloudflared 可能用
 
 # R8169 网卡（PCIe RTL8111H，内置编译确保无模块依赖即可用）
