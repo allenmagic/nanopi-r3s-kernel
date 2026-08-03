@@ -898,6 +898,23 @@ opts_n+=("VDSO_GETRANDOM")            # 纯性能，禁后走syscall
 opts_n+=("MULTIUSER")                 # OpenRC单用户不需
 	opts_y+=("PREEMPT_VOLUNTARY")
 
+	# --- 路由器核心模块强制 =y（对抗 Armbian 默认 =m 注入）---
+	for _fy in \
+		NETFILTER NF_CONNTRACK NF_NAT \
+		NF_DEFRAG_IPV4 NF_DEFRAG_IPV6 \
+		NF_TABLES NF_TABLES_INET NF_TABLES_IPV4 NF_TABLES_IPV6 \
+		NFT_CT NFT_NAT NFT_MASQ NFT_REDIR \
+		NFT_REJECT NFT_REJECT_INET NFT_REJECT_IPV4 NFT_REJECT_IPV6 \
+		NFT_LOG NFT_LIMIT \
+		NFT_FLOW_OFFLOAD NF_FLOW_TABLE NF_FLOW_TABLE_INET \
+		NF_REJECT_IPV4 NF_REJECT_IPV6 \
+		NF_LOG_IPV4 NF_LOG_IPV6 NF_LOG_SYSLOG \
+		TUN WIREGUARD PPP PPPOE VLAN_8021Q IPV6; do
+		# 先从 opts_m 中删除（防止被设为 =m）
+		opts_m=("${opts_m[@]/$_fy}")
+		opts_y+=("$_fy")
+	done
+
 	# 从 opts_n 中剔除 keep_set 成员（docker/ebpf 模式需要这些项，不能进 opts_n）
 	if [[ ${#keep_set[@]} -gt 0 ]]; then
 		local -a filtered_n=()
