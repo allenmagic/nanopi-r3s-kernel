@@ -368,6 +368,18 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 		"NF_TABLES_BRIDGE"
 		"NET_IP_TUNNEL" "NET_UDP_TUNNEL"
 		"DUMMY"                        # v2.4: dummy 虚拟网卡（opts_m 注入）
+
+		# --- 路由器核心模块（config 已 =y，防止 Armbian opts_m 覆盖降级）---
+		"NF_CONNTRACK" "NF_NAT"
+		"NF_DEFRAG_IPV4" "NF_DEFRAG_IPV6"
+		"NF_TABLES" "NF_TABLES_INET" "NF_TABLES_IPV4" "NF_TABLES_IPV6"
+		"NFT_CT" "NFT_NAT" "NFT_MASQ" "NFT_REDIR"
+		"NFT_REJECT" "NFT_REJECT_INET" "NFT_REJECT_IPV4" "NFT_REJECT_IPV6"
+		"NFT_LOG" "NFT_LIMIT"
+		"NFT_FLOW_OFFLOAD" "NF_FLOW_TABLE" "NF_FLOW_TABLE_INET"
+		"NF_REJECT_IPV4" "NF_REJECT_IPV6"
+		"NF_LOG_IPV4" "NF_LOG_IPV6" "NF_LOG_SYSLOG"
+		"TUN" "WIREGUARD" "PPP" "PPPOE" "VLAN_8021Q" "IPV6"
 	)
 
 	# 过滤 opts_m
