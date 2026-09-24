@@ -602,7 +602,8 @@ unset_k RD_LZMA
 	info "[H.3-M] TCP/调试精简 (~3 项)"
 
 	# --- M1: 保留 CUBIC + BBR（sysctl 设 tcp_congestion_control=bbr）---
-	unset_k TCP_CONG_ADVANCED
+	# TCP_CONG_ADVANCED 是 BBR 的依赖：关掉它，BBR 会被 olddefconfig 丢弃
+	set_y TCP_CONG_ADVANCED
 	set_y TCP_CONG_BBR
 
 	# --- M2: SYMBOLIC_ERRNAME（errno号→名称, 生产环境不需要）---

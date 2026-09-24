@@ -254,7 +254,8 @@ jobs:
 
           echo "=== 产物 config: $(basename ${CFG}) ==="
           fail=0
-          for k in TUN WIREGUARD NF_TABLES NF_CONNTRACK IPV6 VLAN_8021Q PPP; do
+          for k in TUN WIREGUARD NF_TABLES NF_CONNTRACK IPV6 VLAN_8021Q PPP \
+                   NET_SCHED NET_SCH_FQ TCP_CONG_BBR RPS LEDS_TRIGGER_NETDEV; do
             v=$(grep -m1 -oE "^CONFIG_${k}=[ym]" "${CFG}" | cut -d= -f2 || true)
             if [ -n "${v}" ]; then
               echo "  ✓ CONFIG_${k}=${v}"
