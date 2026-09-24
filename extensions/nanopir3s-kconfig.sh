@@ -369,8 +369,17 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 		"NF_TABLES_BRIDGE"
 		"NET_IP_TUNNEL" "NET_UDP_TUNNEL"
 		"DUMMY"                        # v2.4: dummy 虚拟网卡（opts_m 注入）
+	)
 
-		# --- 路由器核心模块（config 已 =y，防止 Armbian opts_m 覆盖降级）---
+	# --- 路由器核心模块（config 已 =y，防止 Armbian opts_m 覆盖降级）---
+	#     ⚠️ 本组语义与 remove_from_m 相反：这些项是要**保住 =y** 的，只从 opts_m
+	#        里剔除（免得被 Armbian 强制降级为 =m），因此**绝不能并进 all_disable**——
+	#        直写段会把集合内每一项写成 "# CONFIG_X is not set"。
+	#        2026-08-03 起 7ba07fb 把它们加进 remove_from_m，而直写段又把整个
+	#        remove_from_m 并入 all_disable，于是 TUN/WIREGUARD/NF_TABLES/IPV6
+	#        等 12 项在产物里被静默关掉（sing-box TUN 入站、nftables 防火墙、
+	#        WireGuard、IPv6 全部失效）。
+	local -a keep_y=(
 		"NF_CONNTRACK" "NF_NAT"
 		"NF_DEFRAG_IPV4" "NF_DEFRAG_IPV6"
 		"NF_TABLES" "NF_TABLES_INET" "NF_TABLES_IPV4" "NF_TABLES_IPV6"
@@ -392,7 +401,7 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 			continue
 		fi
 		local skip=0
-		for rem in "${remove_from_m[@]}"; do
+		for rem in "${remove_from_m[@]}" "${keep_y[@]}"; do
 			[[ "$opt" == "$rem" ]] && { skip=1; break; }
 		done
 		[[ $skip -eq 0 ]] && filtered_m+=("$opt")
@@ -928,6 +937,7 @@ opts_n+=("MULTIUSER")                 # OpenRC单用户不需
 		if [[ -f .config ]]; then
 			display_alert "${EXTENSION}" "Directly disabling items in .config" "info"
 			# 合并 remove_from_y + remove_from_m + opts_n 全集
+			# （keep_y 不在此列——那些是要保住的 =y 核心模块）
 			local -a all_disable=()
 			all_disable+=("${remove_from_y[@]}")
 			all_disable+=("${remove_from_m[@]}")

@@ -241,6 +241,31 @@ jobs:
           echo "boot_pkg=${BOOT_PKG}" >> "$GITHUB_OUTPUT"
 
       # ----------------------------------------------------------
+      # 4b. 产物红线自检：核心功能必须真的编进最终内核
+      #     只校验 trim 脚本的输出不够——扩展钩子在构建期还会改写 .config。
+      #     2026-08-03 起 TUN/WIREGUARD/NF_TABLES/IPV6 等 12 项就是在产物里
+      #     被静默关掉的（sing-box TUN、nftables、WireGuard 全部失效），
+      #     直到核对 boot/config-* 才暴露。
+      # ----------------------------------------------------------
+      - name: Verify router core symbols in built config
+        run: |
+          CFG=$(ls /tmp/boot-bundle/boot/config-* 2>/dev/null | head -1)
+          [ -n "${CFG}" ] || { echo "错误: 产物中未找到 boot/config-*"; exit 1; }
+
+          echo "=== 产物 config: $(basename ${CFG}) ==="
+          fail=0
+          for k in TUN WIREGUARD NF_TABLES NF_CONNTRACK IPV6 VLAN_8021Q PPP; do
+            v=$(grep -m1 -oE "^CONFIG_${k}=[ym]" "${CFG}" | cut -d= -f2 || true)
+            if [ -n "${v}" ]; then
+              echo "  ✓ CONFIG_${k}=${v}"
+            else
+              echo "  ✗ CONFIG_${k} 未启用 —— 路由器核心功能缺失" >&2
+              fail=1
+            fi
+          done
+          [ "${fail}" -eq 0 ] || { echo "产物缺少核心符号，中止发布" >&2; exit 1; }
+
+      # ----------------------------------------------------------
       # 5. 上传 artifact（发布由独立 release job 统一处理）
       # ----------------------------------------------------------
       - name: Upload boot artifact
