@@ -115,6 +115,40 @@ jobs:
           echo "=== 裁剪模式: ${{ env.KERNEL_MODE }} ==="
 
       # ----------------------------------------------------------
+      # 2b. 按模式生成裁剪 config，喂给 Armbian
+      #     Armbian 只认 userpatches/linux-rockchip64-current.config；
+      #     trim 脚本的输出落在 userpatches/kernel/rockchip64-current/ 下，
+      #     少了这一步拷贝，Armbian 拿到的就是仓库根那份（恒为 minimal 状态），
+      #     docker/ebpf 模式会静默失效——钩子只能"不关"符号，不能"打开"。
+      # ----------------------------------------------------------
+      - name: Trim kernel config (${{ env.KERNEL_MODE }})
+        run: |
+          cd "${{ env.ARMBIAN_BUILD_DIR }}/userpatches"
+
+          chmod +x trim-r3s-kernel.sh
+          ./trim-r3s-kernel.sh --mode "${{ env.KERNEL_MODE }}"
+
+          cp kernel/rockchip64-current/linux-rockchip64-current.config \
+             linux-rockchip64-current.config
+
+          echo "=== ${{ env.KERNEL_MODE }} 模式 config：$(grep -cE '^(CONFIG_[A-Z0-9_]+)=(y|m)$' linux-rockchip64-current.config) 项 y/m ==="
+
+          # 模式标志位自检：缺了就说明裁剪结果没进来，宁可构建失败
+          case "${{ env.KERNEL_MODE }}" in
+            docker|full)
+              for k in MULTIUSER NAMESPACES CGROUP_BPF BPF_SYSCALL; do
+                grep -q "^CONFIG_${k}=y" linux-rockchip64-current.config \
+                  || { echo "错误: ${{ env.KERNEL_MODE }} 模式下 CONFIG_${k} 未启用"; exit 1; }
+              done
+              ;;
+            ebpf)
+              grep -q '^CONFIG_BPF_SYSCALL=y' linux-rockchip64-current.config \
+                || { echo "错误: ebpf 模式下 CONFIG_BPF_SYSCALL 未启用"; exit 1; }
+              ;;
+          esac
+          echo "=== 模式标志位自检通过 ==="
+
+      # ----------------------------------------------------------
       # 3. 编译内核 + u-boot
       # ----------------------------------------------------------
       - name: Build kernel
