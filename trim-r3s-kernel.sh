@@ -827,6 +827,7 @@ set_y DW_WATCHDOG
 #    ⚠️ CONFIG_BPF=y 由 CONFIG_NET=y select，无法禁用（6.18+ 强制）
 #    但 BPF_SYSCALL/CGROUP_BPF 可以且必须禁掉
 #    root cause: NETFILTER_BPF_LINK（Armbian 核心 opts_y 注入 + default y）
+#    ⚠️ 例外：docker 模式下这两项必须保留，见下
 # =============================================================================
 if [[ $ENABLE_EBPF -eq 0 ]]; then
 	info "[K] BPF 终结者 (BPF=y 由 NET=y 强制select，无法禁用)"
@@ -834,15 +835,27 @@ if [[ $ENABLE_EBPF -eq 0 ]]; then
 	# 元凶: NETFILTER_BPF_LINK (default y，select BPF_SYSCALL → select BPF → select CGROUP_BPF)
 	unset_k NETFILTER_BPF_LINK
 
-	# BPF_SYSCALL + 子项（BPF_SYSCALL select BPF，但 NET 已经 select BPF）
-	unset_k BPF_SYSCALL
+	# BPF_SYSCALL：docker 模式下 cgroup v2 的设备访问控制由 eBPF 实现
+	# （BPF_CGROUP_DEVICE），缺它时带 --device 的容器起不来。baseline 本来就没开，
+	# 故必须主动 set_y，而不是"不 unset"。
+	if [[ $ENABLE_DOCKER -eq 1 ]]; then
+		set_y BPF_SYSCALL
+	else
+		unset_k BPF_SYSCALL
+	fi
+
+	# BPF_SYSCALL 子项（docker 下也不需要 JIT）
 	unset_k BPF_JIT
 	unset_k BPF_JIT_ALWAYS_ON
 	unset_k BPF_JIT_DEFAULT_ON
 	unset_k BPF_UNPRIV_DEFAULT_OFF
 
-	# cgroup BPF（被 BPF_SYSCALL 反向拉起）
-	unset_k CGROUP_BPF
+	# cgroup BPF（被 BPF_SYSCALL 反向拉起；docker 下同上必须保留）
+	if [[ $ENABLE_DOCKER -eq 1 ]]; then
+		set_y CGROUP_BPF
+	else
+		unset_k CGROUP_BPF
+	fi
 
 	# 防御性：其他可能 select BPF_SYSCALL 的项
 	unset_k NETFILTER_XT_MATCH_BPF    # xt_bpf（xtables 已全砍，防御性）
