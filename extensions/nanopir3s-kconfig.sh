@@ -119,7 +119,6 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 
 		# --- 实验性/不需要的网络框架 ---
 		"NETKIT"                       # 实验性网络设备框架
-		"NET_SCHED"                    # tc 框架（无 QoS 需求）
 		"NET_L3_MASTER_DEV"            # L3 主设备
 
 		# --- IPsec 框架（WireGuard 不用）---
@@ -453,7 +452,6 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 
 	# --- 网络 ---
 	opts_n+=("NETKIT")
-	opts_n+=("NET_SCHED")
 	opts_n+=("NET_L3_MASTER_DEV")
 	opts_n+=("XFRM")
 
@@ -731,7 +729,6 @@ opts_n+=("NET_IP_TUNNEL")
 opts_n+=("NETKIT")
 opts_n+=("NET_L3_MASTER_DEV")
 opts_n+=("NET_RX_BUSY_POLL")
-opts_n+=("NET_SCHED")
 opts_n+=("NET_SCH_FIFO")
 opts_n+=("NET_SELFTESTS")
 opts_n+=("NET_SOCK_MSG")
@@ -879,7 +876,6 @@ opts_n+=("ARM_PMU")
 opts_n+=("ARM_PMUV3")
 opts_n+=("CONTIG_ALLOC")
 opts_n+=("MIGRATION")
-opts_n+=("RPS")
 opts_n+=("SYSCTL_EXCEPTION_TRACE")
 opts_n+=("XPS")
 # --- v2.2 Y.5 新增 ---

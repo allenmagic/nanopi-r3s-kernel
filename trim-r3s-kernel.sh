@@ -250,18 +250,20 @@ unset_k BRIDGE_VLAN_FILTERING
 # =============================================================================
 info "[B] 关闭 NET_SCHED / NET_CLS / NET_ACT (共 ~20 个模块)"
 
-unset_k NET_SCHED
+# 保留 NET_SCHED 框架 + fq/fq_codel：sysctl 的 net.core.default_qdisc=fq
+# 与 tcp_congestion_control=bbr 依赖前者，缺了整个 sysctl 文件会被中止
+set_y NET_SCHED
+set_y NET_SCH_DEFAULT
+set_y NET_SCH_FQ
+set_y NET_SCH_FQ_CODEL
+
 unset_k NET_SCH_HTB
 unset_k NET_SCH_HFSC
-unset_k NET_SCH_FQ_CODEL
 unset_k NET_SCH_CAKE
 unset_k NET_SCH_INGRESS
-unset_k NET_SCH_DEFAULT
 unset_k NET_SCH_FIFO
 unset_k NET_SCH_FQ_PIE
-unset_k NET_SCH_FQ
 unset_k NET_SCH_PFIFO_FAST
-unset_k DEFAULT_NET_SCH
 
 unset_k NET_CLS
 unset_k NET_CLS_BASIC
@@ -599,9 +601,9 @@ unset_k RD_LZMA
 	# ============================================================================
 	info "[H.3-M] TCP/调试精简 (~3 项)"
 
-	# --- M1: TCP_CONG_ADVANCED + BBR（路由器自身TCP流量极小，CUBIC足够）---
+	# --- M1: 保留 CUBIC + BBR（sysctl 设 tcp_congestion_control=bbr）---
 	unset_k TCP_CONG_ADVANCED
-	unset_k TCP_CONG_BBR
+	set_y TCP_CONG_BBR
 
 	# --- M2: SYMBOLIC_ERRNAME（errno号→名称, 生产环境不需要）---
 	unset_k SYMBOLIC_ERRNAME
@@ -1760,8 +1762,9 @@ info "[Y.4] 安全可砍残余"
 unset_k ARM_PMU
 unset_k ARM_PMUV3
 
-# 软件 RSS/XPS（R8169 单队列网卡无收益，加逐包开销）
-unset_k RPS
+# 软件 RPS 保留：SoC GMAC 是多队列（实测 qdisc mq），sysctl 设
+# net.ipv4.rps_sock_flow_entries 依赖它；XPS 仍砍（多队列发送侧收益小）
+set_y RPS
 unset_k XPS
 
 # POSIX ACL（单用户路由器不需要文件 ACL）
@@ -1791,8 +1794,11 @@ unset_k PTP_1588_CLOCK_OPTIONAL
 info "[Y.5] 冷门内核特性/残留框架精简"
 
 # LED_TRIGGER_PHY — PHY link LED 触发器
-# R3S 使用 r8169/stmmac 驱动内置 LED trigger，不依赖此框架
 unset_k LED_TRIGGER_PHY
+
+# LEDS_TRIGGER_NETDEV — 网口活动闪烁（local.d/00-leds.start 依赖；
+# R3S 的 green:wan/green:lan 是 GPIO LED，需要它做 link/tx/rx 指示）
+set_y LEDS_TRIGGER_NETDEV
 
 # HW_PERF_EVENTS — 硬件 perf 计数器（PERF_EVENTS + ARM_PMU 已全关）
 unset_k HW_PERF_EVENTS
