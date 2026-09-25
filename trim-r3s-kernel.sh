@@ -1256,6 +1256,10 @@ unset_k COMPACTION               # 内存压缩依赖于 CMA/hugepage
 # =============================================================================
 info "[S] 块设备调优 / 其他平台 MMC 驱动砍除"
 
+# 允许对已挂载的块设备做写打开（内核默认 y）。
+# 关闭后 resize2fs 连读超级块都开不了设备（EBUSY），根分区无法在线扩容。
+set_y BLK_DEV_WRITE_MOUNTED
+
 # 块设备调优（机械盘/SATA 优化，microSD 无意义）
 unset_k BLK_DEV_THROTTLING
 unset_k BLK_DEV_THROTTLING_LOW
