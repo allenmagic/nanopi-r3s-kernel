@@ -956,3 +956,12 @@ opts_n+=("MULTIUSER")                 # OpenRC单用户不需
 	kernel_config_modifying_hashes+=("nanopir3s_undo_armbian_ebpf")
 	return 0
 }
+
+# 把内核版本后缀从 -current-rockchip64 换成本项目名：Armbian 各处都用 ${BRANCH}-${LINUXFAMILY}
+# 变量拼版本，改名后变量与实际版本仍同步（改 LOCALVERSION 则对不上，打包会找不到 vmlinuz）。
+# post_family_config 在 family 配置之后跑，所以这里的赋值能覆盖 rockchip64_common.inc 的 declare -g。
+function post_family_config__nanopir3s_family_name() {
+	display_alert "${EXTENSION}" "LINUXFAMILY: rockchip64 -> nanopi-r3s" "info"
+	declare -g LINUXFAMILY="nanopi-r3s"
+	declare -g LINUXCONFIG="linux-nanopi-r3s-${BRANCH}"
+}

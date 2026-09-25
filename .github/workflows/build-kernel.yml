@@ -116,7 +116,7 @@ jobs:
 
       # ----------------------------------------------------------
       # 2b. 按模式生成裁剪 config，喂给 Armbian
-      #     Armbian 只认 userpatches/linux-rockchip64-current.config；
+      #     Armbian 只认 userpatches/linux-nanopi-r3s-current.config；
       #     trim 脚本的输出落在 userpatches/kernel/rockchip64-current/ 下，
       #     少了这一步拷贝，Armbian 拿到的就是仓库根那份（恒为 minimal 状态），
       #     docker/ebpf 模式会静默失效——钩子只能"不关"符号，不能"打开"。
@@ -129,20 +129,20 @@ jobs:
           ./trim-r3s-kernel.sh --mode "${{ env.KERNEL_MODE }}"
 
           cp kernel/rockchip64-current/linux-rockchip64-current.config \
-             linux-rockchip64-current.config
+             linux-nanopi-r3s-current.config
 
-          echo "=== ${{ env.KERNEL_MODE }} 模式 config：$(grep -cE '^(CONFIG_[A-Z0-9_]+)=(y|m)$' linux-rockchip64-current.config) 项 y/m ==="
+          echo "=== ${{ env.KERNEL_MODE }} 模式 config：$(grep -cE '^(CONFIG_[A-Z0-9_]+)=(y|m)$' linux-nanopi-r3s-current.config) 项 y/m ==="
 
           # 模式标志位自检：缺了就说明裁剪结果没进来，宁可构建失败
           case "${{ env.KERNEL_MODE }}" in
             docker|full)
               for k in MULTIUSER NAMESPACES CGROUP_BPF BPF_SYSCALL; do
-                grep -q "^CONFIG_${k}=y" linux-rockchip64-current.config \
+                grep -q "^CONFIG_${k}=y" linux-nanopi-r3s-current.config \
                   || { echo "错误: ${{ env.KERNEL_MODE }} 模式下 CONFIG_${k} 未启用"; exit 1; }
               done
               ;;
             ebpf)
-              grep -q '^CONFIG_BPF_SYSCALL=y' linux-rockchip64-current.config \
+              grep -q '^CONFIG_BPF_SYSCALL=y' linux-nanopi-r3s-current.config \
                 || { echo "错误: ebpf 模式下 CONFIG_BPF_SYSCALL 未启用"; exit 1; }
               ;;
           esac
@@ -186,7 +186,7 @@ jobs:
                    "${BUNDLE_DIR}/lib"
 
           # --- linux-image（vmlinuz + modules）---
-          IMAGE_DEB=$(ls "${DEBS_DIR}"/linux-image-current-rockchip64_*.deb 2>/dev/null | head -1)
+          IMAGE_DEB=$(ls "${DEBS_DIR}"/linux-image-current-*_*.deb 2>/dev/null | head -1)
           [ -n "${IMAGE_DEB}" ] || { echo "错误: 未找到 linux-image deb"; ls "${DEBS_DIR}"; exit 1; }
           echo "=== 提取 linux-image: $(basename ${IMAGE_DEB}) ==="
           dpkg-deb -x "${IMAGE_DEB}" "${EXTRACT_DIR}/image"
@@ -195,7 +195,7 @@ jobs:
           cp -a "${EXTRACT_DIR}/image/lib/modules/"* "${BUNDLE_DIR}/lib/modules/"
 
           # --- linux-dtb（rk3566-nanopi-r3s.dtb）---
-          DTB_DEB=$(ls "${DEBS_DIR}"/linux-dtb-current-rockchip64_*.deb 2>/dev/null | head -1)
+          DTB_DEB=$(ls "${DEBS_DIR}"/linux-dtb-current-*_*.deb 2>/dev/null | head -1)
           if [ -n "${DTB_DEB}" ]; then
             echo "=== 提取 DTB: $(basename ${DTB_DEB}) ==="
             dpkg-deb -x "${DTB_DEB}" "${EXTRACT_DIR}/dtb"

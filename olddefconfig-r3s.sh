@@ -13,7 +13,7 @@
 set -euo pipefail
 
 # ---------- 默认 ----------
-CFG_DEFAULT="userpatches/linux-rockchip64-current.config"
+CFG_DEFAULT="userpatches/linux-nanopi-r3s-current.config"
 CFG=""; KSRC=""; DRY=0
 
 # ---------- 解析参数 ----------
@@ -44,13 +44,14 @@ err()  { echo "${R}[✗]${X} $*" >&2; }
 # ---------- 自动寻找内核源码 ----------
 if [[ -z "$KSRC" ]]; then
   log "自动搜索内核源码目录..."
-  # Armbian 常见路径：
-  #   build/cache/sources/linux-kernel-worktree/linux-<ver>-rockchip64
-  #   build/cache/sources/linux-rockchip64/linux-<ver>
+  # Armbian 常见路径（家族名已由扩展钩子改成 nanopi-r3s，所以别写死 rockchip64）：
+  #   build/cache/sources/linux-kernel-worktree/<ver>__<family>__<arch>
+  #   build/cache/sources/linux-<family>/linux-<ver>
   candidates=()
   while IFS= read -r d; do candidates+=("$d"); done < <(
     find cache/sources -maxdepth 5 -type d \
-         \( -name 'linux-*rockchip64*' -o -name 'linux-rockchip64*' \) \
+         \( -name 'linux-*nanopi-r3s*' -o -name 'linux-*rockchip64*' \
+            -o -name '*__nanopi-r3s__*' -o -name 'linux-nanopi-r3s*' \) \
          2>/dev/null | sort -u
   )
   # 过滤：必须包含 Makefile 且看起来是内核源码
