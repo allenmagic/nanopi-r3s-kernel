@@ -719,8 +719,9 @@ unset_k RD_LZMA
 	# --- L2: IPV6_OPTIMISTIC_DAD（路由器用静态IPv6，不需要DAD加速）---
 	unset_k IPV6_OPTIMISTIC_DAD
 
-	# --- L3: UNIX98_PTYS（现代Linux用 /dev/pts）---
-	unset_k UNIX98_PTYS
+	# --- L3: UNIX98_PTYS 必须保留 —— 关掉后连 devpts 都没有，容器起不来
+	#         （crun: mount devpts ... No such device），ssh -t / tmux 也用不了 ---
+	set_y UNIX98_PTYS
 
 	# --- L4: NET_L3_MASTER_DEV（NET_VRF+IPVLAN_L3S均砍，孤儿）---
 	unset_k NET_L3_MASTER_DEV
