@@ -739,6 +739,7 @@ info "[I] nftables 全套确认（路由器核心功能编译进内核）"
 # 路由器核心基础：连接跟踪和 NAT 框架（必须=y）
 set_y NETFILTER
 set_y NF_CONNTRACK
+set_y NF_CONNTRACK_PROCFS    # /proc/net/nf_conntrack；mainline 默认 n，显式打开
 set_y NF_NAT
 
 # 路由器核心：nftables 框架和 NAT 组件全部编译进内核（=y）
@@ -799,8 +800,8 @@ set_y VLAN_8021Q             # VLAN 功能
 unset_k PPP_MULTILINK        # 单WAN不需要多链路
 set_y IPV6                   # WireGuard / cloudflared 可能用
 
-# R8169 网卡（PCIe RTL8111H，内置编译确保无模块依赖即可用）
-set_y R8169
+# R8169 网卡（PCIe RTL8111H = LAN 口）。编成模块，让内置 GMAC 先注册拿到 eth0
+set_m R8169
 set_y NET_VENDOR_REALTEK
 
 # GMAC (RK3566 内置)
