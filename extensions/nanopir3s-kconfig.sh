@@ -956,16 +956,3 @@ opts_n+=("MULTIUSER")                 # OpenRC单用户不需
 	kernel_config_modifying_hashes+=("nanopir3s_undo_armbian_ebpf")
 	return 0
 }
-
-# Armbian 把 LOCALVERSION 放在 make 命令行上（优先于 .config），改 CONFIG_LOCALVERSION 无效
-function custom_kernel_make_params__nanopir3s_localversion() {
-	display_alert "${EXTENSION}" "Rewriting LOCALVERSION to -NanoPi-R3S" "info"
-
-	local -a _new_params_=()
-	local _p_
-	for _p_ in "${common_make_params_quoted[@]}"; do
-		[[ "${_p_}" == LOCALVERSION=* ]] && _p_="LOCALVERSION=-NanoPi-R3S"
-		_new_params_+=("${_p_}")
-	done
-	common_make_params_quoted=("${_new_params_[@]}")
-}
