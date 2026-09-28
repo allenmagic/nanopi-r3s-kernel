@@ -64,68 +64,34 @@ cd nanopi-r3s-kernel
 | `docker` | ✓ | ✗ | 907 | 在 minimal 之上加容器栈 |
 | `full` | ✓ | ✓ | 943 | 在 docker 之上再加 eBPF/landscape |
 
-### full 的 eBPF 部分对齐 landscape 官方内核指南
+### full 的 eBPF 部分对齐 landscape 内核指南
 
-`--mode full` 按 [landscape 内核要求](https://landscape.whileaway.dev/zh/intro/requirements.html)
-逐项配置，并补齐了指南没写、但依赖不满足就会让选项被 `olddefconfig` 静默丢弃的整条闭包：
+`--mode full` 按 [landscape 内核要求](https://landscape.whileaway.dev/zh/intro/requirements.html) 配置，
+并补齐了指南没写、但依赖不满足就会被 `olddefconfig` 静默丢弃的闭包：
 
-| 指南项 | 状态 | 说明 |
-|--------|------|------|
-| `BPF` / `HAVE_EBPF_JIT` / `ARCH_WANT_DEFAULT_BPF_JIT` | =y | 架构能力声明，`NET=y` 强制 |
-| `BPF_SYSCALL` / `BPF_JIT` / `BPF_JIT_DEFAULT_ON` | =y | 核心 |
-| `BPF_JIT_ALWAYS_ON` | **n** | 指南要求保持关闭，保留解释器回退 |
-| `BPF_UNPRIV_DEFAULT_OFF` / `BPF_PRELOAD` | y / n | 与指南一致 |
-| `BPF_LSM` | =y | 同时写 `CONFIG_LSM="lockdown,yama,integrity,bpf"`——Armbian 默认串里没有 `bpf`，不写就不注册 |
-| `CGROUP_BPF` / `NETFILTER_BPF_LINK` | =y | |
-| `NET_CLS_BPF` / `NET_ACT_BPF` | =m | 新增 B.1 节保留 `NET_CLS`/`NET_CLS_ACT`/`NET_SCH_INGRESS`（clsact）作为挂载点 |
-| `BPF_STREAM_PARSER` / `LWTUNNEL_BPF` / `IPV6_SEG6_BPF` | =y | 补齐 `NET_SOCK_MSG`/`LWTUNNEL`/`IPV6_SEG6_LWTUNNEL` 前置 |
-| `BPF_EVENTS` | =y | 补齐 `FTRACE`+`PERF_EVENTS`+`KALLSYMS`+`KPROBES`+`KPROBE_EVENTS`+`UPROBES`+`TRACEPOINTS`+`TRACING_SUPPORT` 闭包（Y 节原本全砍）。**`FTRACE` 是硬前置**：`BPF_EVENTS`/`KPROBE_EVENTS`/`UPROBE_EVENTS` 都写在 `kernel/trace/Kconfig` 的 `if FTRACE`(←194) / `endif`(→1241) 块里，`FTRACE=n` 时它们恒为 n，哪怕其他依赖都满足 |
-| `HID_BPF` | n | HID 子系统已整体砍除，恒为 n |
-| `NETFILTER_XT_MATCH_BPF` | **未开** | **有意偏离**：它依赖 `NETFILTER_XTABLES`，而 `IP_NF_*`/`IP6_NF_*` 已全砍——没有 iptables 链可挂。landscape 的数据面是动态挂到 XDP/TC 的 eBPF，与 iptables 无关 |
+| 项 | 值 | 备注 |
+|---|---|---|
+| `BPF_SYSCALL`/`BPF_JIT`/`BPF_JIT_DEFAULT_ON`/`BPF_UNPRIV_DEFAULT_OFF`/`CGROUP_BPF`/`NETFILTER_BPF_LINK`/`BPF_STREAM_PARSER`/`LWTUNNEL_BPF`/`IPV6_SEG6_BPF` | y | `BPF_JIT_ALWAYS_ON` 按要求保持 **n** |
+| `BPF_LSM` | y | 需 `CONFIG_LSM` 含 `bpf`，否则编进去也不注册 |
+| `NET_CLS_BPF`/`NET_ACT_BPF` | m | 已在 B.1 节保留挂载点 `NET_CLS`/`NET_CLS_ACT`/`NET_SCH_INGRESS`(clsact) |
+| `BPF_EVENTS` | y | 依赖 `FTRACE`，见下 |
+| cgroup CPU：`CGROUP_SCHED`/`FAIR_GROUP_SCHED`/`CFS_BANDWIDTH`/`CGROUP_CPUACCT` | y | 指南「开启 Cgroups 的 CPU 控制」 |
+| BTF：`DEBUG_INFO_DWARF5`/`DEBUG_INFO_BTF` | y | CO-RE 必需 |
+| `HID_BPF` | n | HID 子系统已整体砍除 |
+| `NETFILTER_XT_MATCH_BPF` | **未开** | **有意偏离**：依赖 `NETFILTER_XTABLES`，而 `IP_NF_*`/`IP6_NF_*` 已全砍，无处可挂；landscape 走 XDP/TC，与 iptables 无关 |
 
-**BTF 的依赖链与三个构建期陷阱**（都已处理，但改动别处时容易踩回去）：
+三条容易踩空的依赖链（脚本与 CI 自检都已兜住）：
 
-```
-BTF 要靠 DEBUG_KERNEL 撑起可见性：
-  DEBUG_KERNEL=y                 ← "Debug information" choice 是 depends on DEBUG_KERNEL
-    └─ 显式选 DEBUG_INFO_DWARF5  ← choice 没有 default；不点名就落回第一个成员 DEBUG_INFO_NONE
-         └─ select DEBUG_INFO
-              └─ DEBUG_INFO_BTF  ← 它在 Kconfig 里位于 `if DEBUG_INFO` 块内
-```
-对应到 menuconfig 就是 landscape 官方说的那条路径：*Kernel hacking → Compile-time checks
-and compiler options → Debug information (Generate DWARF Version 5 debuginfo)*，选完
-*Generate BTF type information* 才出现。
+- **`FTRACE` 是 `BPF_EVENTS` 的硬前置**：`BPF_EVENTS`/`KPROBE_EVENTS` 位于 `kernel/trace/Kconfig`
+  的 `if FTRACE` 块内，`FTRACE=n` 时恒为 n。只开框架，tracer 仍全砍。
+- **BTF 靠 `DEBUG_KERNEL` 撑可见性**：`DEBUG_KERNEL` → "Debug information" choice → 显式点名
+  `DEBUG_INFO_DWARF5`（该 choice 无 `default`，不点名就落回 `DEBUG_INFO_NONE`）→ `DEBUG_INFO_BTF`。
+  这正是 landscape 让你在 menuconfig 里先选 DWARF5 再选 BTF 的原因。
+- **`BPF_LSM → SECURITY → MULTIUSER`**，任一环断掉整条链就从 Kconfig 消失。
 
-1. `DEBUG_KERNEL` 原本被无条件砍掉（Y.2 节）。它在 full 模式下必须留住，否则整个
-   "Debug information" choice 不可见、`DEBUG_INFO` 恒为 n，BTF 连带拿不到。开这个门控本身
-   不引入代码，具体调试项仍由 Y 节那一长串 `unset_k DEBUG_*` 逐个关掉。
-2. `DEBUG_INFO_DWARF*` 原本被无条件砍掉。该 choice **没有 `default`**，一旦不点名任何成员，
-   kconfig 会落在第一个成员 `DEBUG_INFO_NONE` 上。full 模式改为显式 `set_y DEBUG_INFO_DWARF5`。
-3. `config-nanopir3s.conf` 里的 `KERNEL_BTF="no"` **不要改成 `"yes"`**。Armbian 在
-   `KERNEL_BTF=no` 时会往 `opts_y` 塞 `DEBUG_INFO_NONE`（这就是它"关掉全部调试信息"的实现），
-   而 `apply_opts_from_arrays()` 的施加顺序是 **`opts_n` → `opts_y` → `opts_m`**（后写覆盖先写），
-   所以 `opts_y` 的 `DEBUG_INFO_NONE=y` 会盖掉我们 `opts_n` 里的 disable。钩子已加
-   `remove_from_y_ebpf=("DEBUG_INFO_NONE")`，仅在 full 模式下把它从 `opts_y` 摘掉。
-   反过来若改成 `KERNEL_BTF="yes"`，Armbian 会强制 `BPF_JIT_ALWAYS_ON=y`（与指南相反）
-   并要求构建机 ≥6451 MiB 可用内存，否则直接 `exit_with_error`。
-
-另外 `BPF_LSM` 的完整依赖是 `BPF_EVENTS && BPF_SYSCALL && SECURITY && BPF_JIT`，而
-`SECURITY` 又 `depends on SYSFS && MULTIUSER`。所以 full 模式下 **`MULTIUSER` 必须开**——
-Y.8 节原本只在 docker 模式开它，关掉会让整条 `SECURITY` 链从 Kconfig 里消失。
-
-代码结构上按「**eBPF 基底 + docker 叠加**」组织：`full` ＝ `docker` 再加上 eBPF 栈，
-`docker` ＝ `minimal` 再加上容器栈。所以像 `MULTIUSER`、`CGROUP_SCHED` 这种两个模式都要的项，
-先由 `if [[ $ENABLE_EBPF -eq 1 ]]` 这个基底块声明，docker 块再独立声明一次自己的需求
-（`set_y` 幂等），而不是写成 `if DOCKER -eq 0 && EBPF -eq 0` 那种"二选一"的排除式条件。
-
-**未验证项**：依赖闭包参照 mainline v6.18 的 Kconfig 逐条核对（含 `if FTRACE`、`if DEBUG_INFO`
-这类纯文本包裹关系），但**尚未跑 `olddefconfig` 或实机编译**（缺解包的内核源码）。
-首次 `--mode full` 构建后请核对产物 `.config` 里指南各项是否真的落地。
-
-**构建机要求**：`DEBUG_INFO_BTF` 的 Kconfig 里有 `depends on PAHOLE_VERSION >= 116` 和
-`depends on DEBUG_INFO_DWARF4 || PAHOLE_VERSION >= 121`。我们选的是 DWARF5，所以
-**构建机必须装 pahole ≥ 1.21**，否则 `DEBUG_INFO_BTF` 会直接不可见、BTF 静默消失。
-这与 `KERNEL_BTF="no"` 无关，是宿主机软件版本问题——构建日志里搜 `pahole` 可确认。
+构建期两个坑：`config-nanopir3s.conf` 里的 `KERNEL_BTF="no"` **别改成 `"yes"`**（Armbian 会强制
+`BPF_JIT_ALWAYS_ON=y`，与指南相反，还要求构建机 ≥6451 MiB 内存）；但 BTF 仍需构建机装
+**pahole ≥ 1.21**，否则 `DEBUG_INFO_BTF` 静默消失。
 
 ## 在 Armbian 构建中使用
 
@@ -231,15 +197,18 @@ find /tmp/r3s-uboot -name 'u-boot-rockchip.bin' -exec cp {} /tmp/r3s-uboot/ \;
 
 > 注：docker/full 模式的编译产物大小未单独测量，差距主要在内核模块增量（`OVERLAY_FS`/`VETH`/`BINFMT_MISC` 等 =m 项 + BTF 调试段）。
 
-## 裁剪守护（红线检查）
+## 红线保护
 
-`trim-r3s-kernel.sh` 每次运行后自动校验关键功能不被误裁（`check_red_line` 函数）：
+没有集中式的检查函数，红线靠两处兜底：
 
-- **RED_LINE_STRICT_Y** (必须=y): WireGuard (CURVE25519/BLAKE2S/CHACHA20POLY1305)、ext4、TUN、GMAC 驱动（DWMAC_ROCKCHIP）、RTC（HYM8563）
-- **RED_LINE_EXIST** (至少=m): nftables、Netfilter、NAT、VLAN、PPPoE、bonding
-- **反向检查**: WireGuard 依赖链完整性（任一依赖被 disable 则失败）
+- **脚本内联**：关键项在各自小节用 `set_y` 显式确认（`# 红线确认` 注释）防止被联动关闭——
+  TUN、WireGuard、nftables、GMAC、RTC(HYM8563)、RK808 PMIC 等。
+- **CI 产物级自检**（真正的闸门）：`.github/workflows/build-kernel.yml` 在编译完成后直接校验
+  `boot/config-*`，不通过即中止发布。查的是 12 个路由器核心符号（TUN/WIREGUARD/NF_TABLES/
+  IPV6/VLAN/PPPoE/BBR/RPS…），以及 full 模式专属的 eBPF/landscape 闭包。
 
-运行结束后自动打印生成 config 的 =y / =m / 合计 计数和当前模式。
+之所以必须查产物而不是查脚本输出：扩展钩子在构建期还会改写 `.config`，只看 trim 结果会漏判
+（2026-08-03 就有 12 项在产物里被静默关掉，直到核对 `boot/config-*` 才暴露）。
 
 ## License
 
