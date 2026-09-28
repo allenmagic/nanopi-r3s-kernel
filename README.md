@@ -64,35 +64,6 @@ cd nanopi-r3s-kernel
 | `docker` | ✓ | ✗ | 907 | 在 minimal 之上加容器栈 |
 | `full` | ✓ | ✓ | 943 | 在 docker 之上再加 eBPF/landscape |
 
-### full 的 eBPF 部分对齐 landscape 内核指南
-
-`--mode full` 按 [landscape 内核要求](https://landscape.whileaway.dev/zh/intro/requirements.html) 配置，
-并补齐了指南没写、但依赖不满足就会被 `olddefconfig` 静默丢弃的闭包：
-
-| 项 | 值 | 备注 |
-|---|---|---|
-| `BPF_SYSCALL`/`BPF_JIT`/`BPF_JIT_DEFAULT_ON`/`BPF_UNPRIV_DEFAULT_OFF`/`CGROUP_BPF`/`NETFILTER_BPF_LINK`/`BPF_STREAM_PARSER`/`LWTUNNEL_BPF`/`IPV6_SEG6_BPF` | y | `BPF_JIT_ALWAYS_ON` 按要求保持 **n** |
-| `BPF_LSM` | y | 需 `CONFIG_LSM` 含 `bpf`，否则编进去也不注册 |
-| `NET_CLS_BPF`/`NET_ACT_BPF` | m | 已在 B.1 节保留挂载点 `NET_CLS`/`NET_CLS_ACT`/`NET_SCH_INGRESS`(clsact) |
-| `BPF_EVENTS` | y | 依赖 `FTRACE`，见下 |
-| cgroup CPU：`CGROUP_SCHED`/`FAIR_GROUP_SCHED`/`CFS_BANDWIDTH`/`CGROUP_CPUACCT` | y | 指南「开启 Cgroups 的 CPU 控制」 |
-| BTF：`DEBUG_INFO_DWARF5`/`DEBUG_INFO_BTF` | y | CO-RE 必需 |
-| `HID_BPF` | n | HID 子系统已整体砍除 |
-| `NETFILTER_XT_MATCH_BPF` | **未开** | **有意偏离**：依赖 `NETFILTER_XTABLES`，而 `IP_NF_*`/`IP6_NF_*` 已全砍，无处可挂；landscape 走 XDP/TC，与 iptables 无关 |
-
-三条容易踩空的依赖链（脚本与 CI 自检都已兜住）：
-
-- **`FTRACE` 是 `BPF_EVENTS` 的硬前置**：`BPF_EVENTS`/`KPROBE_EVENTS` 位于 `kernel/trace/Kconfig`
-  的 `if FTRACE` 块内，`FTRACE=n` 时恒为 n。只开框架，tracer 仍全砍。
-- **BTF 靠 `DEBUG_KERNEL` 撑可见性**：`DEBUG_KERNEL` → "Debug information" choice → 显式点名
-  `DEBUG_INFO_DWARF5`（该 choice 无 `default`，不点名就落回 `DEBUG_INFO_NONE`）→ `DEBUG_INFO_BTF`。
-  这正是 landscape 让你在 menuconfig 里先选 DWARF5 再选 BTF 的原因。
-- **`BPF_LSM → SECURITY → MULTIUSER`**，任一环断掉整条链就从 Kconfig 消失。
-
-构建期两个坑：`config-nanopir3s.conf` 里的 `KERNEL_BTF="no"` **别改成 `"yes"`**（Armbian 会强制
-`BPF_JIT_ALWAYS_ON=y`，与指南相反，还要求构建机 ≥6451 MiB 内存）；但 BTF 仍需构建机装
-**pahole ≥ 1.21**，否则 `DEBUG_INFO_BTF` 静默消失。
-
 ## 在 Armbian 构建中使用
 
 ```bash
