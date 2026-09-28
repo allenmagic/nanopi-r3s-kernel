@@ -2,7 +2,7 @@
 
 NanoPi R3S 路由器专用最小化内核配置工具链。
 
-基于 Armbian build framework，从基线 888 项（y/m）按需裁剪至 860~906 项，支持 4 种裁剪模式：纯路由器 / 容器 / eBPF / 全功能。
+基于 Armbian build framework，从基线 888 项（y/m）按需裁剪至 871~943 项，支持 4 种裁剪模式：纯路由器 / 容器 / eBPF / 全功能。
 
 ## 目录结构
 
@@ -41,16 +41,16 @@ nanopi-r3s-kernel/
 git clone https://github.com/YOURNAME/nanopi-r3s-kernel
 cd nanopi-r3s-kernel
 
-# 默认 minimal 模式（纯路由器，860 y/m，最大裁剪）
+# 默认 minimal 模式（纯路由器，871 y/m，最大裁剪）
 ./trim-r3s-kernel.sh
 
-# 保留容器栈（Docker/Podman，894 y/m）
+# 保留容器栈（Docker/Podman，907 y/m）
 ./trim-r3s-kernel.sh --mode docker
 
-# 保留 eBPF 工具链（cilium/bpftrace/bcc，872 y/m）
+# 保留 eBPF 数据面/工具链（landscape router / cilium / bpftrace / bcc，910 y/m）
 ./trim-r3s-kernel.sh --mode ebpf
 
-# 全功能（docker + ebpf，906 y/m）
+# 全功能（docker + ebpf，943 y/m）
 ./trim-r3s-kernel.sh --mode full
 
 # 查看帮助
@@ -63,10 +63,73 @@ cd nanopi-r3s-kernel
 
 | 模式 | Docker | eBPF | y/m | 用途 |
 |------|--------|------|-----|------|
-| `minimal` | ✗ | ✗ | 860 | 纯路由器，最大裁剪 |
-| `ebpf` | ✗ | ✓ | 872 | 网络调试 / cilium / bpftrace |
-| `docker` | ✓ | ✗ | 894 | 跑容器化服务 |
-| `full` | ✓ | ✓ | 906 | 全功能 |
+| `minimal` | ✗ | ✗ | 871 | 纯路由器，最大裁剪 |
+| `ebpf` | ✗ | ✓ | 910 | landscape router / cilium / bpftrace / bcc |
+| `docker` | ✓ | ✗ | 907 | 跑容器化服务 |
+| `full` | ✓ | ✓ | 943 | 全功能 |
+
+### eBPF 模式对齐 landscape 官方内核指南
+
+`--mode ebpf`（及 `full`）按 [landscape 内核要求](https://landscape.whileaway.dev/zh/intro/requirements.html)
+逐项配置，并补齐了指南没写、但依赖不满足就会让选项被 `olddefconfig` 静默丢弃的整条闭包：
+
+| 指南项 | 状态 | 说明 |
+|--------|------|------|
+| `BPF` / `HAVE_EBPF_JIT` / `ARCH_WANT_DEFAULT_BPF_JIT` | =y | 架构能力声明，`NET=y` 强制 |
+| `BPF_SYSCALL` / `BPF_JIT` / `BPF_JIT_DEFAULT_ON` | =y | 核心 |
+| `BPF_JIT_ALWAYS_ON` | **n** | 指南要求保持关闭，保留解释器回退 |
+| `BPF_UNPRIV_DEFAULT_OFF` / `BPF_PRELOAD` | y / n | 与指南一致 |
+| `BPF_LSM` | =y | 同时写 `CONFIG_LSM="lockdown,yama,integrity,bpf"`——Armbian 默认串里没有 `bpf`，不写就不注册 |
+| `CGROUP_BPF` / `NETFILTER_BPF_LINK` | =y | |
+| `NET_CLS_BPF` / `NET_ACT_BPF` | =m | 新增 B.1 节保留 `NET_CLS`/`NET_CLS_ACT`/`NET_SCH_INGRESS`（clsact）作为挂载点 |
+| `BPF_STREAM_PARSER` / `LWTUNNEL_BPF` / `IPV6_SEG6_BPF` | =y | 补齐 `NET_SOCK_MSG`/`LWTUNNEL`/`IPV6_SEG6_LWTUNNEL` 前置 |
+| `BPF_EVENTS` | =y | 补齐 `FTRACE`+`PERF_EVENTS`+`KALLSYMS`+`KPROBES`+`KPROBE_EVENTS`+`UPROBES`+`TRACEPOINTS`+`TRACING_SUPPORT` 闭包（Y 节原本全砍）。**`FTRACE` 是硬前置**：`BPF_EVENTS`/`KPROBE_EVENTS`/`UPROBE_EVENTS` 都写在 `kernel/trace/Kconfig` 的 `if FTRACE`(←194) / `endif`(→1241) 块里，`FTRACE=n` 时它们恒为 n，哪怕其他依赖都满足 |
+| `HID_BPF` | n | HID 子系统已整体砍除，恒为 n |
+| `NETFILTER_XT_MATCH_BPF` | **未开** | **有意偏离**：它依赖 `NETFILTER_XTABLES`，而 `IP_NF_*`/`IP6_NF_*` 已全砍——没有 iptables 链可挂。landscape 的数据面是动态挂到 XDP/TC 的 eBPF，与 iptables 无关 |
+
+**BTF 的依赖链与三个构建期陷阱**（都已处理，但改动别处时容易踩回去）：
+
+```
+BTF 要靠 DEBUG_KERNEL 撑起可见性：
+  DEBUG_KERNEL=y                 ← "Debug information" choice 是 depends on DEBUG_KERNEL
+    └─ 显式选 DEBUG_INFO_DWARF5  ← choice 没有 default；不点名就落回第一个成员 DEBUG_INFO_NONE
+         └─ select DEBUG_INFO
+              └─ DEBUG_INFO_BTF  ← 它在 Kconfig 里位于 `if DEBUG_INFO` 块内
+```
+对应到 menuconfig 就是 landscape 官方说的那条路径：*Kernel hacking → Compile-time checks
+and compiler options → Debug information (Generate DWARF Version 5 debuginfo)*，选完
+*Generate BTF type information* 才出现。
+
+1. `DEBUG_KERNEL` 原本被无条件砍掉（Y.2 节）。它在 ebpf 模式下必须留住，否则整个
+   "Debug information" choice 不可见、`DEBUG_INFO` 恒为 n，BTF 连带拿不到。开这个门控本身
+   不引入代码，具体调试项仍由 Y 节那一长串 `unset_k DEBUG_*` 逐个关掉。
+2. `DEBUG_INFO_DWARF*` 原本被无条件砍掉。该 choice **没有 `default`**，一旦不点名任何成员，
+   kconfig 会落在第一个成员 `DEBUG_INFO_NONE` 上。ebpf 模式改为显式 `set_y DEBUG_INFO_DWARF5`。
+3. `config-nanopir3s.conf` 里的 `KERNEL_BTF="no"` **不要改成 `"yes"`**。Armbian 在
+   `KERNEL_BTF=no` 时会往 `opts_y` 塞 `DEBUG_INFO_NONE`（这就是它"关掉全部调试信息"的实现），
+   而 `apply_opts_from_arrays()` 的施加顺序是 **`opts_n` → `opts_y` → `opts_m`**（后写覆盖先写），
+   所以 `opts_y` 的 `DEBUG_INFO_NONE=y` 会盖掉我们 `opts_n` 里的 disable。钩子已加
+   `remove_from_y_ebpf=("DEBUG_INFO_NONE")`，仅在 ebpf 模式下把它从 `opts_y` 摘掉。
+   反过来若改成 `KERNEL_BTF="yes"`，Armbian 会强制 `BPF_JIT_ALWAYS_ON=y`（与指南相反）
+   并要求构建机 ≥6451 MiB 可用内存，否则直接 `exit_with_error`。
+
+另外 `BPF_LSM` 的完整依赖是 `BPF_EVENTS && BPF_SYSCALL && SECURITY && BPF_JIT`，而
+`SECURITY` 又 `depends on SYSFS && MULTIUSER`。所以 ebpf 模式下 **`MULTIUSER` 必须开**——
+Y.8 节原本只在 docker 模式开它，关掉会让整条 `SECURITY` 链从 Kconfig 里消失。
+
+代码结构上按「**ebpf 基底 + docker 叠加**」组织：`full` 不是与 `ebpf` 并列的第四种组合，
+而是在 ebpf 生效之后再把容器栈补上去。所以像 `MULTIUSER` 这种两者都要的项，先由
+`if [[ $ENABLE_EBPF -eq 1 ]]` 这个基底块决定，docker 块再独立声明一次自己的需求
+（`set_y` 幂等），而不是写成 `if DOCKER -eq 0 && EBPF -eq 0` 那种"二选一"的排除式条件。
+
+**未验证项**：依赖闭包参照 mainline v6.18 的 Kconfig 逐条核对（含 `if FTRACE`、`if DEBUG_INFO`
+这类纯文本包裹关系），但**尚未跑 `olddefconfig` 或实机编译**（缺解包的内核源码）。
+首次 `--mode ebpf` 构建后请核对产物 `.config` 里指南各项是否真的落地。
+
+**构建机要求**：`DEBUG_INFO_BTF` 的 Kconfig 里有 `depends on PAHOLE_VERSION >= 116` 和
+`depends on DEBUG_INFO_DWARF4 || PAHOLE_VERSION >= 121`。我们选的是 DWARF5，所以
+**构建机必须装 pahole ≥ 1.21**，否则 `DEBUG_INFO_BTF` 会直接不可见、BTF 静默消失。
+这与 `KERNEL_BTF="no"` 无关，是宿主机软件版本问题——构建日志里搜 `pahole` 可确认。
 
 ## 在 Armbian 构建中使用
 
@@ -148,14 +211,18 @@ find /tmp/r3s-uboot -name 'u-boot-rockchip.bin' -exec cp {} /tmp/r3s-uboot/ \;
 
 ## 裁剪效果
 
-### 各模式 y/m 配置项数（v2.12）
+### 各模式 y/m 配置项数
 
-| 模式 | =y | =m | 合计 | 增量 |
+脚本产物（**olddefconfig 之前**的统计，= `trim-r3s-kernel.sh` 末尾打印的口径）：
+
+| 模式 | =y | =m | 合计 | 相对 minimal |
 |------|-----|-----|------|------|
-| `minimal` | 785 | 75 | **860** | 基线 |
-| `ebpf` | 794 | 78 | **872** | +12 |
-| `docker` | 820 | 74 | **894** | +34 |
-| `full` | 829 | 77 | **906** | +46 |
+| `minimal` | 835 | 36 | **871** | 基线 |
+| `ebpf` | 872 | 38 | **910** | +39（landscape 闭包） |
+| `docker` | 865 | 42 | **907** | +36 |
+| `full` | 899 | 44 | **943** | +72 |
+
+> 早先版本此处列的是 860/872/894/906，那是另一阶段（olddefconfig 之后）的计数口径，两者不可直接比较。
 
 ### 编译产物（minimal 模式）
 

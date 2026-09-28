@@ -30,7 +30,7 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 #   ./trim-r3s-kernel.sh                    # 默认 minimal 模式
 #   ./trim-r3s-kernel.sh --mode minimal     # 纯路由器（最小裁剪）
 #   ./trim-r3s-kernel.sh --mode docker      # 支持 Docker/Podman 容器
-#   ./trim-r3s-kernel.sh --mode ebpf        # 支持 eBPF 工具链（cilium/bpftrace/bcc）
+#   ./trim-r3s-kernel.sh --mode ebpf        # 支持 eBPF 数据面/工具链（landscape/cilium/bpftrace/bcc）
 #   ./trim-r3s-kernel.sh --mode full        # Docker + eBPF 全开
 TRIM_MODE="minimal"
 
@@ -41,7 +41,12 @@ Usage: $(basename "$0") [--mode <minimal|docker|ebpf|full>] [-h|--help]
 裁剪模式：
   minimal  纯路由器（默认），最大限度裁剪，~879 项 y/m
   docker   保留容器栈（namespaces/cgroup controllers/OVERLAY_FS/VETH/BRIDGE）
-  ebpf     保留 eBPF 工具链（BPF_SYSCALL/CGROUP_BPF/BPF_JIT/BTF/XDP）
+  ebpf     保留 eBPF 数据面/工具链（landscape router、cilium、bpftrace、bcc）
+           对齐 landscape 官方内核指南：BPF_SYSCALL/JIT/LSM/CGROUP_BPF、
+           tc-bpf（NET_CLS/NET_CLS_ACT/NET_SCH_INGRESS + NET_CLS_BPF/NET_ACT_BPF）、
+           LWTUNNEL_BPF/IPV6_SEG6_BPF、BPF_STREAM_PARSER、BPF_EVENTS 及其 tracing
+           闭包、XDP_SOCKETS、BTF（CO-RE）。唯一未开的是 NETFILTER_XT_MATCH_BPF，
+           原因见 A 节注释。
   full     docker + ebpf 全开
 EOF
 }
@@ -99,9 +104,15 @@ info "已写入裁剪模式标记：${SCRIPT_DIR}/.trim-mode = ${TRIM_MODE}"
 set_y()  { local k="CONFIG_$1"; sed -i "/^# *${k} is not set/d; /^${k}=/d" "$DST"; echo "${k}=y" >> "$DST"; }
 set_m()  { local k="CONFIG_$1"; sed -i "/^# *${k} is not set/d; /^${k}=/d" "$DST"; echo "${k}=m" >> "$DST"; }
 unset_k(){ local k="CONFIG_$1"; sed -i "/^${k}=/d; /^# *${k} is not set/d" "$DST"; echo "# ${k} is not set" >> "$DST"; }
+# 字符串型选项（如 CONFIG_LSM），值需自带引号：set_str LSM '"a,b"'
+set_str(){ local k="CONFIG_$1"; sed -i "/^${k}=/d; /^# *${k} is not set/d" "$DST"; echo "${k}=$2" >> "$DST"; }
 
 # =============================================================================
 # A. 关闭 NETFILTER_XTABLES + 全套 xt_* （走纯 nftables 路线）
+#    ⚠️ 有意偏离 landscape 内核指南：指南要求 NETFILTER_XT_MATCH_BPF=m，但它依赖
+#       NETFILTER_XTABLES，而 IP_NF_*/IP6_NF_* 已全砍 —— 没有 iptables 链可挂，
+#       开了也是个用不上的死模块。landscape 的数据面是动态挂到 XDP/TC 的 eBPF，
+#       跟 iptables 无关，故 ebpf/full 模式下这里同样保持全关。
 # =============================================================================
 info "[A] 关闭 NETFILTER_XTABLES + xt_* (共 ~40 个模块)"
 
@@ -260,17 +271,14 @@ set_y NET_SCH_FQ_CODEL
 unset_k NET_SCH_HTB
 unset_k NET_SCH_HFSC
 unset_k NET_SCH_CAKE
-unset_k NET_SCH_INGRESS
 unset_k NET_SCH_FIFO
 unset_k NET_SCH_FQ_PIE
 unset_k NET_SCH_PFIFO_FAST
 
-unset_k NET_CLS
 unset_k NET_CLS_BASIC
 unset_k NET_CLS_FW
 unset_k NET_CLS_U32
 unset_k NET_CLS_FLOWER
-unset_k NET_CLS_ACT
 
 unset_k NET_ACT_POLICE
 unset_k NET_ACT_MIRRED
@@ -280,6 +288,20 @@ unset_k NET_ACT_SKBEDIT
 unset_k NET_ACT_VLAN
 
 unset_k IFB
+
+# B.1 tc 分类/动作框架（landscape/cilium 的 tc-bpf 数据面挂载点）
+#     NET_SCH_INGRESS 提供 clsact qdisc，NET_CLS/NET_CLS_ACT 是它的前置 bool；
+#     landscape 启动时就要挂 TC 程序，故框架取 =y 而不是 =m（省掉模块自动加载这一环）。
+if [[ $ENABLE_EBPF -eq 1 ]]; then
+	info "[B.1] ${YELLOW}[eBPF 模式]${NC} 保留 tc 框架 (NET_CLS/NET_CLS_ACT/NET_SCH_INGRESS)"
+	set_y NET_CLS
+	set_y NET_CLS_ACT
+	set_y NET_SCH_INGRESS
+else
+	unset_k NET_SCH_INGRESS
+	unset_k NET_CLS
+	unset_k NET_CLS_ACT
+fi
 
 # =============================================================================
 # C. 容器栈裁剪（保留 namespaces + cgroup 框架，砍掉容器专用网络/存储）
@@ -828,11 +850,13 @@ set_y WATCHDOG
 set_y DW_WATCHDOG
 
 # =============================================================================
-# K. BPF 终结者（P0-1）
+# K. BPF 终结者 / eBPF 数据面（P0-1）
 #    ⚠️ CONFIG_BPF=y 由 CONFIG_NET=y select，无法禁用（6.18+ 强制）
 #    但 BPF_SYSCALL/CGROUP_BPF 可以且必须禁掉
 #    root cause: NETFILTER_BPF_LINK（Armbian 核心 opts_y 注入 + default y）
 #    ⚠️ 例外：docker 模式下这两项必须保留，见下
+#    eBPF 分支的对齐目标：landscape router 官方内核指南
+#      https://landscape.whileaway.dev/zh/intro/requirements.html
 # =============================================================================
 if [[ $ENABLE_EBPF -eq 0 ]]; then
 	info "[K] BPF 终结者 (BPF=y 由 NET=y 强制select，无法禁用)"
@@ -854,6 +878,7 @@ if [[ $ENABLE_EBPF -eq 0 ]]; then
 	unset_k BPF_JIT_ALWAYS_ON
 	unset_k BPF_JIT_DEFAULT_ON
 	unset_k BPF_UNPRIV_DEFAULT_OFF
+	unset_k BPF_PRELOAD
 
 	# cgroup BPF（被 BPF_SYSCALL 反向拉起；docker 下同上必须保留）
 	if [[ $ENABLE_DOCKER -eq 1 ]]; then
@@ -865,8 +890,12 @@ if [[ $ENABLE_EBPF -eq 0 ]]; then
 	# 防御性：其他可能 select BPF_SYSCALL 的项
 	unset_k NETFILTER_XT_MATCH_BPF    # xt_bpf（xtables 已全砍，防御性）
 	unset_k LWTUNNEL_BPF              # 轻量级隧道 BPF
+	unset_k LWTUNNEL
+	unset_k IPV6_SEG6_LWTUNNEL
+	unset_k IPV6_SEG6_BPF
 	unset_k XDP_SOCKETS               # XDP socket
 	unset_k XDP_SOCKETS_DIAG
+	unset_k NET_SOCK_MSG              # sockmap/sockhash 底层
 	unset_k BPF_STREAM_PARSER         # sockmap BPF
 	unset_k BPF_EVENTS                # tracing BPF
 	unset_k BPF_KPROBE_OVERRIDE
@@ -874,27 +903,80 @@ if [[ $ENABLE_EBPF -eq 0 ]]; then
 	unset_k NET_CLS_BPF               # tc BPF 分类器
 	unset_k NET_ACT_BPF               # tc BPF action
 
-	# ⚠️ 不砍 PERF_EVENTS（影响 perf 工具、CPU 性能计数器）
-	# ⚠️ 不砍 KPROBES（影响某些内核机制）
 	# ⚠️ 不砍 HAVE_EBPF_JIT（架构能力声明，砍不掉）
 	# ⚠️ BPF 本身无法禁（NET=y → select BPF），但 BPF=y 只是 bool 声明，无实际代码
 else
-	info "[K] ${YELLOW}[eBPF 模式]${NC} 保留 BPF_SYSCALL/CGROUP_BPF/JIT/XDP + BTF"
+	info "[K] ${YELLOW}[eBPF 模式]${NC} 保留 BPF 数据面 + tc-bpf + tracing（landscape / cilium / bpftrace）"
+
+	# --- 指南红线：BPF 子系统本体 ---
 	set_y BPF_SYSCALL
 	set_y BPF_JIT
-	set_y BPF_JIT_ALWAYS_ON
+	# 指南明确要求 ALWAYS_ON 关闭：保留解释器回退，避免个别程序 JIT 失败即整个 bpf() 拒载
+	unset_k BPF_JIT_ALWAYS_ON
+	set_y BPF_JIT_DEFAULT_ON
+	set_y BPF_UNPRIV_DEFAULT_OFF
+	unset_k BPF_PRELOAD           # 指南要求 not set
+	set_y BPF_LSM
 	set_y CGROUP_BPF
-	set_y BPF_EVENTS              # tracing BPF（bpftrace/bcc 需要）
-	set_y XDP_SOCKETS             # XDP socket（cilium 高性能数据面）
-	set_y NET_CLS_BPF             # tc BPF 分类器
-	set_y NET_ACT_BPF             # tc BPF action
+	set_y BPF_STREAM_PARSER
+	set_y NETFILTER_BPF_LINK
 
-	# CO-RE eBPF 需要 BTF 调试信息
+	# BPF_LSM 依赖链：BPF_LSM → SECURITY → (SYSFS && MULTIUSER)。
+	# M.0 砍的是 AppArmor，LSM 框架本身得留着，否则 BPF_LSM 无处注册；
+	# MULTIUSER 另见 Y.8 的守卫（ebpf 模式一并打开）。
+	set_y SECURITY
+	set_y SYSFS
+
+	# --- 轻量隧道 / SRv6（指南要求）---
+	set_y LWTUNNEL
+	set_y LWTUNNEL_BPF
+	set_y IPV6_SEG6_LWTUNNEL      # IPV6_SEG6_BPF 的前置，并 select LWTUNNEL
+	set_y IPV6_SEG6_BPF
+
+	# --- tc-bpf（框架在 B.1 已按模式开好）---
+	set_m NET_CLS_BPF             # 指南要求 =m
+	set_m NET_ACT_BPF             # 指南要求 =m
+	set_y NET_SOCK_MSG            # BPF_STREAM_PARSER 的前置
+	set_y XDP_SOCKETS             # AF_XDP 快路径（cilium/landscape）
+
+	# --- tracing 闭包：BPF_EVENTS 依赖 FTRACE && PERF_EVENTS && (KPROBE_EVENTS||UPROBE_EVENTS) ---
+	#     依赖不满足时 olddefconfig 会把 BPF_EVENTS/BPF_LSM 静默丢掉，故整条闭包一起开。
+	#     FTRACE 只是框架开关（BPF_EVENTS 在它的 if 块内），具体 tracer 仍全部关闭。
+	set_y FTRACE
+	set_y BPF_EVENTS
+	set_y PERF_EVENTS
+	set_y KALLSYMS                # KPROBES 的硬依赖，Y 节默认要砍，这里必须留住
+	set_y KPROBES
+	set_y KPROBE_EVENTS
+	set_y UPROBES
+	set_y UPROBE_EVENTS
+	set_y TRACEPOINTS
+	set_y TRACING_SUPPORT
+	set_y ARM_PMU                 # 配套：PERF_EVENTS 开了才有硬件计数器
+	set_y ARM_PMUV3
+	set_y HW_PERF_EVENTS
+
+	# BPF_LSM 另外还依赖 SECURITY=y，而 SECURITY depends on MULTIUSER —— 见 Y.8 的
+	# MULTIUSER 守卫：ebpf 模式下 MULTIUSER 必须跟着开，否则整条 SECURITY 链不存在，
+	# BPF_LSM 会被静默丢掉。
+
+	# --- CO-RE eBPF 需要 BTF 调试信息 ---
+	# 链路：DEBUG_KERNEL 打开 "Debug information" choice 的可见性
+	#     → 显式选 DEBUG_INFO_DWARF5（choice 无 default，不选就落回 DEBUG_INFO_NONE）
+	#     → 该成员 select DEBUG_INFO → DEBUG_INFO_BTF 才可见
+	set_y DEBUG_KERNEL
+	set_y DEBUG_INFO_DWARF5
 	set_y DEBUG_INFO
 	set_y DEBUG_INFO_BTF
 	set_y DEBUG_INFO_BTF_MODULES
 
-	# NETFILTER_BPF_LINK 由 BPF_SYSCALL 拉起，不显式 set_y（让 default y 生效）
+	# BPF LSM 必须在 CONFIG_LSM 列表里才会注册。Armbian 的列表是
+	# "lockdown,yama,integrity,apparmor"，既没有 bpf 又引用了已砍的 apparmor。
+	set_str LSM '"lockdown,yama,integrity,bpf"'
+
+	# ⚠️ 有意偏离指南：NETFILTER_XT_MATCH_BPF=m 未开启（依赖 NETFILTER_XTABLES，
+	#    而 IP_NF_*/IP6_NF_* 已全砍 —— 没有 iptables 链可挂，开了也是死模块）。
+	# ⚠️ HID_BPF 指南要求 not set：HID 子系统已整体砍除，恒为 n。
 fi
 
 # =============================================================================
@@ -1539,17 +1621,35 @@ unset_k LIRC
 # =============================================================================
 info "[Y] 调试/Tracing 兜底"
 
-# Perf 性能计数器（生产路由器不需要）
-unset_k PERF_EVENTS
+# Perf 性能计数器（生产路由器不需要；eBPF 模式下 BPF_EVENTS 依赖它，见 K 节）
+if [[ $ENABLE_EBPF -eq 1 ]]; then
+	set_y PERF_EVENTS
+else
+	unset_k PERF_EVENTS
+fi
 
 # 内核符号表（无 tracing/bpf 后无用，但可能影响模块加载，先关闭观察）
-unset_k KALLSYMS
+# ⚠️ KPROBES 硬依赖 KALLSYMS，eBPF 模式下必须留住，否则 BPF_EVENTS 整条闭包塌掉
+if [[ $ENABLE_EBPF -eq 1 ]]; then
+	set_y KALLSYMS
+else
+	unset_k KALLSYMS
+fi
 
 # ELF core dump（路由器不产生 core dump）
 unset_k ELFCORE
 
-# Ftrace 全套（BPF 已砍，ftrace 无消费者）
-unset_k FTRACE
+# Ftrace 框架 + 各类 tracer
+# ⚠️ FTRACE 在 kernel/trace/Kconfig 里是一对 `if FTRACE`(194) / `endif`(1241)，
+#    BPF_EVENTS、KPROBE_EVENTS、UPROBE_EVENTS 全都在这对 if 里面。FTRACE=n 时
+#    它们即使依赖全满足也恒为 n（kconfig 直接当符号不存在）。所以 eBPF 模式下
+#    FTRACE 必须 =y —— 这是 BPF_EVENTS / BPF_LSM 的硬前置。
+#    但 FTRACE 只提供框架，具体 tracer 仍然全砍（FUNCTION_TRACER 等不被需要）。
+if [[ $ENABLE_EBPF -eq 1 ]]; then
+	set_y FTRACE
+else
+	unset_k FTRACE
+fi
 unset_k FUNCTION_TRACER
 unset_k FUNCTION_GRAPH_TRACER
 unset_k DYNAMIC_FTRACE
@@ -1606,27 +1706,38 @@ unset_k DEBUG_NOTIFIERS
 unset_k DEBUG_CREDENTIALS
 unset_k DEBUG_KOBJECT_RELEASE
 unset_k DEBUG_STACK_USAGE
-unset_k DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT
-unset_k DEBUG_INFO_DWARF4
-unset_k DEBUG_INFO_DWARF5
+# "Debug information" 是个 choice，且**没有 default** —— 不显式选就会落在第一个
+# 成员 DEBUG_INFO_NONE 上，DEBUG_INFO 随之恒为 n，BTF 连带起不来。所以 eBPF 模式
+# 必须显式点名 DEBUG_INFO_DWARF5（landscape 官方说明也是让你选这一项）。
+# ⚠️ DEBUG_INFO_NONE 两种模式都要先摘掉：baseline 里它本来就是 =y，不摘会和
+#    DEBUG_INFO_DWARF5 同时 =y，构成非法 choice 状态（谁赢取决于 olddefconfig
+#    读文件的顺序，不能赌）。minimal 下摘掉也安全 —— 无成员被选时 kconfig 仍会
+#    落回默认的第一个成员 DEBUG_INFO_NONE，调试信息一样是关的。
+unset_k DEBUG_INFO_NONE
+if [[ $ENABLE_EBPF -eq 1 ]]; then
+	set_y DEBUG_INFO_DWARF5
+else
+	unset_k DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT
+	unset_k DEBUG_INFO_DWARF4
+	unset_k DEBUG_INFO_DWARF5
+fi
 unset_k DEBUG_INFO_REDUCED
 unset_k DEBUG_INFO_COMPRESSED_NONE
 unset_k DEBUG_INFO_COMPRESSED_ZLIB
 unset_k DEBUG_INFO_COMPRESSED_ZSTD
-unset_k DEBUG_INFO_SPLIT
+unset_k DEBUG_INFO_SPLIT             # BTF depends on !DEBUG_INFO_SPLIT
 unset_k GDB_SCRIPTS
 unset_k READABLE_ASM
 unset_k HEADERS_INSTALL
 
 # DEBUG_INFO 整体关闭（生产内核不需要符号）
-# eBPF 模式下保留 DEBUG_INFO_BTF（CO-RE eBPF 必需），其他仍然砍
+# eBPF 模式下保留 DEBUG_INFO + BTF（CO-RE eBPF 必需），其他仍然砍
 if [[ $ENABLE_EBPF -eq 0 ]]; then
 	unset_k DEBUG_INFO
-	unset_k DEBUG_INFO_NONE
 	unset_k DEBUG_INFO_BTF           # ⚠️ BPF 已砍，BTF 也无意义
 	unset_k DEBUG_INFO_BTF_MODULES
 else
-	info "    [eBPF 模式] 保留 DEBUG_INFO + BTF（CO-RE eBPF 需要）"
+	info "    [eBPF 模式] 保留 DEBUG_INFO + DEBUG_INFO_DWARF5 + BTF（CO-RE eBPF 需要）"
 	# 已在 K 节用 set_y 启用，此处不重复
 fi
 
@@ -1731,7 +1842,14 @@ else
 fi
 
 # DEBUG_KERNEL — 调试框架门控（生产关闭）
-unset_k DEBUG_KERNEL
+# ⚠️ 但 "Debug information" choice 是 `depends on DEBUG_KERNEL` 的：eBPF 模式要 BTF
+#    就必须留住它，否则 choice 整个不可见 → DEBUG_INFO 恒 n → DEBUG_INFO_BTF 拿不到。
+#    具体调试项由上面那一长串 unset_k 逐个关掉，开这个门控本身不带来代码。
+if [[ $ENABLE_EBPF -eq 1 ]]; then
+	set_y DEBUG_KERNEL
+else
+	unset_k DEBUG_KERNEL
+fi
 
 # POWER_SUPPLY — 电源框架（R3S 无电池）
 unset_k POWER_SUPPLY
@@ -1764,9 +1882,14 @@ unset_k CRYPTO_HW                # HW 加密框架（Rockchip engine 已砍）
 # =============================================================================
 info "[Y.4] 安全可砍残余"
 
-# ARM PMU 硬件性能计数器（PERF_EVENTS 已砍，无消费者）
-unset_k ARM_PMU
-unset_k ARM_PMUV3
+# ARM PMU 硬件性能计数器（PERF_EVENTS 已砍，无消费者；eBPF 模式下 PERF_EVENTS 开着，配套保留）
+if [[ $ENABLE_EBPF -eq 1 ]]; then
+	set_y ARM_PMU
+	set_y ARM_PMUV3
+else
+	unset_k ARM_PMU
+	unset_k ARM_PMUV3
+fi
 
 # 软件 RPS 保留：SoC GMAC 是多队列（实测 qdisc mq），sysctl 设
 # net.ipv4.rps_sock_flow_entries 依赖它；XPS 仍砍（多队列发送侧收益小）
@@ -1806,8 +1929,12 @@ unset_k LED_TRIGGER_PHY
 # R3S 的 green:wan/green:lan 是 GPIO LED，需要它做 link/tx/rx 指示）
 set_y LEDS_TRIGGER_NETDEV
 
-# HW_PERF_EVENTS — 硬件 perf 计数器（PERF_EVENTS + ARM_PMU 已全关）
-unset_k HW_PERF_EVENTS
+# HW_PERF_EVENTS — 硬件 perf 计数器（随 ARM_PMU 走）
+if [[ $ENABLE_EBPF -eq 1 ]]; then
+	set_y HW_PERF_EVENTS
+else
+	unset_k HW_PERF_EVENTS
+fi
 
 # VM_EVENT_COUNTERS — /proc/vmstat（生产路由器不需要内存统计）
 unset_k VM_EVENT_COUNTERS
@@ -1844,8 +1971,12 @@ fi
 info "[Y.7] 编译实测后孤儿/冗余项清扫"
 
 # TRACING_SUPPORT — 追踪框架基础设施（hidden, default y, 无 select）
-# FTRACE/KPROBES 已全砍，底层框架无用
-unset_k TRACING_SUPPORT
+# FTRACE/KPROBES 已全砍，底层框架无用；eBPF 模式下 TRACEPOINTS 需要它
+if [[ $ENABLE_EBPF -eq 1 ]]; then
+	set_y TRACING_SUPPORT
+else
+	unset_k TRACING_SUPPORT
+fi
 
 # SCSI_MOD — SCSI 层已关(n)，但 default y if SCSI=n 让它继续=y
 unset_k SCSI_MOD
@@ -1914,12 +2045,20 @@ unset_k NET_IP_TUNNEL
 # VDSO_GETRANDOM — VDSO fast getrandom(), 禁后走syscall
 unset_k VDSO_GETRANDOM
 
-# MULTIUSER — 多用户/组/权限支持（OpenRC 单用户路由不需要）
-# Docker/容器需要 NAMESPACES，而 NAMESPACES depends on MULTIUSER
-if [[ $ENABLE_DOCKER -eq 0 ]]; then
-	unset_k MULTIUSER
+# ---- MULTIUSER：eBPF 基底 ----
+# BPF_LSM → SECURITY → MULTIUSER；关掉 MULTIUSER 会让整条 SECURITY 链从 Kconfig
+# 里消失，BPF_LSM 静默失效（详见 K 节）。
+if [[ $ENABLE_EBPF -eq 1 ]]; then
+	set_y MULTIUSER
 else
-	set_y MULTIUSER              # 容器必需：恢复后级联拉起 NAMESPACES
+	unset_k MULTIUSER
+fi
+
+# ---- docker 在生效模式之上叠加 ----
+# full = ebpf 基底 + docker 增量，所以这里是"补"而不是"二选一"：
+# 容器同样要 MULTIUSER（NAMESPACES depends on MULTIUSER），再往上加全套 namespace。
+if [[ $ENABLE_DOCKER -eq 1 ]]; then
+	set_y MULTIUSER
 	set_y NAMESPACES
 	set_y UTS_NS
 	set_y IPC_NS

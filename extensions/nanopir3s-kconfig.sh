@@ -69,12 +69,20 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 		done
 	fi
 	if [[ $enable_ebpf -eq 1 ]]; then
+		# 目标：landscape router 官方内核指南。注意 BPF_JIT_ALWAYS_ON 故意不在
+		# keep_set 里——指南要求它保持 not set，得让下面的 opts_n 把它压成 n。
 		local k
 		for k in \
-			NETFILTER_BPF_LINK BPF_SYSCALL BPF_JIT BPF_JIT_ALWAYS_ON BPF_EVENTS \
-			CGROUP_BPF NET_CLS_BPF NET_ACT_BPF NET_SOCK_MSG \
+			NETFILTER_BPF_LINK BPF_SYSCALL BPF_JIT BPF_JIT_DEFAULT_ON \
+			BPF_UNPRIV_DEFAULT_OFF BPF_LSM BPF_EVENTS BPF_STREAM_PARSER \
+			CGROUP_BPF NET_SOCK_MSG \
+			NET_CLS_BPF NET_ACT_BPF NET_CLS NET_CLS_ACT NET_SCH_INGRESS \
+			LWTUNNEL LWTUNNEL_BPF IPV6_SEG6_LWTUNNEL IPV6_SEG6_BPF \
 			XDP_SOCKETS XDP_SOCKETS_DIAG \
-			DEBUG_INFO DEBUG_INFO_DWARF5 DEBUG_INFO_BTF DEBUG_INFO_BTF_MODULES; do
+			FTRACE PERF_EVENTS KALLSYMS KPROBES KPROBE_EVENTS UPROBES UPROBE_EVENTS \
+			TRACEPOINTS TRACING TRACING_SUPPORT ARM_PMU ARM_PMUV3 HW_PERF_EVENTS \
+			SECURITY SYSFS MULTIUSER \
+			DEBUG_KERNEL DEBUG_INFO DEBUG_INFO_DWARF5 DEBUG_INFO_BTF DEBUG_INFO_BTF_MODULES; do
 			keep_set[$k]=1
 		done
 	fi
@@ -210,6 +218,18 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 		"EXT4_FS_POSIX_ACL"            # ext4 ACL（opts_y 注入）
 	)
 
+	# eBPF 模式额外要从 opts_y 剔除的项。注意方向与 keep_set 相反：
+	# keep_set 是"别把它关掉"，这里是"别把它强行打开"。
+	#   DEBUG_INFO_NONE —— config-nanopir3s.conf 里 KERNEL_BTF="no" 时，
+	#   Armbian 的 armbian_kernel_config__600_enable_ebpf_and_btf_info() 会把它塞进
+	#   opts_y（这就是它"disable all debug info"的实现方式）。又因为 apply 顺序是
+	#   opts_n → opts_y → opts_m，opts_y 会盖掉我们 opts_n 里的 disable，
+	#   于是 DEBUG_INFO_NONE=y → DEBUG_INFO=n → DEBUG_INFO_BTF 永远起不来。
+	#   eBPF 模式要 BTF（CO-RE），必须把这一项从 opts_y 里摘掉。
+	local -a remove_from_y_ebpf=(
+		"DEBUG_INFO_NONE"
+	)
+
 	# 过滤 opts_y
 	local -a filtered_y=()
 	local opt
@@ -223,6 +243,11 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 		for rem in "${remove_from_y[@]}"; do
 			[[ "$opt" == "$rem" ]] && { skip=1; break; }
 		done
+		if [[ $skip -eq 0 && $enable_ebpf -eq 1 ]]; then
+			for rem in "${remove_from_y_ebpf[@]}"; do
+				[[ "$opt" == "$rem" ]] && { skip=1; break; }
+			done
+		fi
 		[[ $skip -eq 0 ]] && filtered_y+=("$opt")
 	done
 	opts_y=("${filtered_y[@]}")

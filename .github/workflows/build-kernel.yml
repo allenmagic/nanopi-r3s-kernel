@@ -267,6 +267,57 @@ jobs:
           [ "${fail}" -eq 0 ] || { echo "产物缺少核心符号，中止发布" >&2; exit 1; }
 
       # ----------------------------------------------------------
+      # 4c. eBPF/landscape 闭包自检（仅 ebpf / full 模式）
+      #     这些符号一旦断链，olddefconfig 与扩展钩子只会**静默丢弃**，编译不会报错，
+      #     所以必须核对产物而不是核对 trim 脚本的输出。已知会静默失效的环节：
+      #       · FTRACE=n → BPF_EVENTS/KPROBE_EVENTS 恒 n（它们在 if FTRACE 块内）
+      #       · SECURITY/MULTIUSER 缺失 → BPF_LSM 不可见
+      #       · 构建机 pahole < 1.21 → DEBUG_INFO_BTF 不可见（runner 上最容易踩）
+      # ----------------------------------------------------------
+      - name: Verify eBPF/landscape closure in built config
+        if: matrix.kernel_mode == 'ebpf' || matrix.kernel_mode == 'full'
+        run: |
+          CFG=$(ls /tmp/boot-bundle/boot/config-* 2>/dev/null | head -1)
+          [ -n "${CFG}" ] || { echo "错误: 产物中未找到 boot/config-*"; exit 1; }
+
+          echo "=== ${KERNEL_MODE} 模式 eBPF/landscape 闭包自检 ==="
+          fail=0
+
+          # 必须是 =y（内置）
+          for k in BPF_SYSCALL BPF_JIT BPF_JIT_DEFAULT_ON BPF_UNPRIV_DEFAULT_OFF \
+                   BPF_LSM BPF_EVENTS BPF_STREAM_PARSER CGROUP_BPF NETFILTER_BPF_LINK \
+                   FTRACE PERF_EVENTS KALLSYMS KPROBES KPROBE_EVENTS TRACEPOINTS TRACING_SUPPORT \
+                   NET_CLS NET_CLS_ACT NET_SCH_INGRESS LWTUNNEL LWTUNNEL_BPF \
+                   IPV6_SEG6_LWTUNNEL IPV6_SEG6_BPF SECURITY SYSFS MULTIUSER \
+                   DEBUG_KERNEL DEBUG_INFO DEBUG_INFO_DWARF5 DEBUG_INFO_BTF DEBUG_INFO_BTF_MODULES; do
+            v=$(grep -m1 -oE "^CONFIG_${k}=y" "${CFG}" | cut -d= -f2 || true)
+            if [ -n "${v}" ]; then echo "  ✓ CONFIG_${k}=y"
+            else echo "  ✗ CONFIG_${k} 不是 =y —— landscape 闭包缺失" >&2; fail=1; fi
+          done
+
+          # 必须是 =m（指南要求编成模块）
+          for k in NET_CLS_BPF NET_ACT_BPF; do
+            v=$(grep -m1 -oE "^CONFIG_${k}=m" "${CFG}" | cut -d= -f2 || true)
+            if [ -n "${v}" ]; then echo "  ✓ CONFIG_${k}=m"
+            else echo "  ✗ CONFIG_${k} 不是 =m —— landscape 闭包缺失" >&2; fail=1; fi
+          done
+
+          # 必须为 n（逆向前置：任一为 y 都会让 BTF/JIT 回退失效）
+          for k in BPF_JIT_ALWAYS_ON DEBUG_INFO_NONE DEBUG_INFO_REDUCED DEBUG_INFO_SPLIT; do
+            if grep -qE "^# CONFIG_${k} is not set" "${CFG}"; then echo "  ✓ CONFIG_${k} 已关闭"
+            else echo "  ✗ CONFIG_${k} 未关闭 —— 会让 BTF/JIT 回退失效" >&2; fail=1; fi
+          done
+
+          # BPF LSM 必须在 LSM 列表里才会注册；Armbian 默认串不含 bpf
+          if grep -qE '^CONFIG_LSM=".*bpf' "${CFG}"; then
+            echo "  ✓ CONFIG_LSM 含 bpf：$(grep -m1 '^CONFIG_LSM=' "${CFG}")"
+          else
+            echo "  ✗ CONFIG_LSM 不含 bpf —— BPF LSM 编进去也不会注册" >&2; fail=1
+          fi
+
+          [ "${fail}" -eq 0 ] || { echo "${KERNEL_MODE} 模式闭包不完整，中止发布" >&2; exit 1; }
+
+      # ----------------------------------------------------------
       # 5. 上传 artifact（发布由独立 release job 统一处理）
       # ----------------------------------------------------------
       - name: Upload boot artifact
