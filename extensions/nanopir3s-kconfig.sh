@@ -38,8 +38,13 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 	case "$trim_mode" in
 		minimal) ;;
 		docker)  enable_docker=1 ;;
-		ebpf)    enable_ebpf=1 ;;
 		full)    enable_docker=1; enable_ebpf=1 ;;
+		ebpf)
+			# ebpf 模式已并入 full（2026-09-28）。按 full 处理而不是退回 minimal：
+			# 静默丢掉 eBPF 栈的后果（landscape 程序加载失败）比多带容器栈更难发现。
+			display_alert "${EXTENSION}" "R3S_TRIM_MODE='ebpf' 已废弃，按 full 处理" "wrn"
+			trim_mode="full"; enable_docker=1; enable_ebpf=1
+			;;
 		*)
 			display_alert "${EXTENSION}" "未知 R3S_TRIM_MODE='${trim_mode}'，按 minimal 处理" "wrn"
 			trim_mode="minimal"
@@ -76,6 +81,7 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 			NETFILTER_BPF_LINK BPF_SYSCALL BPF_JIT BPF_JIT_DEFAULT_ON \
 			BPF_UNPRIV_DEFAULT_OFF BPF_LSM BPF_EVENTS BPF_STREAM_PARSER \
 			CGROUP_BPF NET_SOCK_MSG \
+			CGROUP_SCHED FAIR_GROUP_SCHED CFS_BANDWIDTH CGROUP_CPUACCT \
 			NET_CLS_BPF NET_ACT_BPF NET_CLS NET_CLS_ACT NET_SCH_INGRESS \
 			LWTUNNEL LWTUNNEL_BPF IPV6_SEG6_LWTUNNEL IPV6_SEG6_BPF \
 			XDP_SOCKETS XDP_SOCKETS_DIAG \

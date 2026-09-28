@@ -29,8 +29,7 @@ Requires root/sudo. Host: Ubuntu 24.04 / Armbian, or any Docker-capable Linux fo
 ./trim-r3s-kernel.sh                       # 默认 minimal 模式（纯路由器，最大裁剪）
 ./trim-r3s-kernel.sh --mode minimal        # 同上，显式指定
 ./trim-r3s-kernel.sh --mode docker         # 保留容器栈（Docker/Podman 可运行）
-./trim-r3s-kernel.sh --mode ebpf           # 保留 eBPF 工具链（cilium/bpftrace/bcc）
-./trim-r3s-kernel.sh --mode full           # docker + ebpf 全开
+./trim-r3s-kernel.sh --mode full           # docker + eBPF/landscape 全开
 ./trim-r3s-kernel.sh --help                # 用法
 # 运行结束打印生成 config 的 =y / =m / 合计 计数 + 当前模式
 
@@ -41,25 +40,26 @@ Requires root/sudo. Host: Ubuntu 24.04 / Armbian, or any Docker-capable Linux fo
 ```
 `olddefconfig-r3s.sh` needs unpacked kernel source. If none exists, trigger one with a kernel build first (see Building above). Both scripts auto-backup the config before writing (`.bak.<epoch>` / `.before-olddef.<ts>`).
 
-### 裁剪模式（`--mode`，v2.12 新增）
+### 裁剪模式（`--mode`，v2.12 新增，v2.13 收敛为三种）
 
-`trim-r3s-kernel.sh` 支持四种模式，按需保留 eBPF / 容器（Docker/Podman）支持：
+`trim-r3s-kernel.sh` 支持三种模式，三者互为基础：
+`docker` = `minimal` + 容器栈；`full` = `docker` + eBPF/landscape 栈。
+（v2.13 起删掉了独立的 `ebpf` 模式——eBPF 栈现在只能通过 `full` 获得。）
 
 | 模式 | Docker | eBPF | 脚本产物 y/m 合计 | 用途 |
 |------|--------|------|--------------|------|
 | `minimal`（默认） | ✗ | ✗ | 871 | 纯路由器，最大裁剪 |
-| `ebpf` | ✗ | ✓ | 910 | landscape router / cilium / bpftrace / bcc |
-| `docker` | ✓ | ✗ | 907 | 在 R3S 上跑容器化服务 |
-| `full` | ✓ | ✓ | 943 | 全功能 |
+| `docker` | ✓ | ✗ | 907 | 在 minimal 之上加容器栈 |
+| `full` | ✓ | ✓ | 943 | 在 docker 之上再加 eBPF/landscape |
 
-实现要点（脚本内用 `ENABLE_DOCKER` / `ENABLE_EBPF` 标志包裹原裁剪块）：
+实现要点（脚本内用 `ENABLE_DOCKER` / `ENABLE_EBPF` 两个标志包裹原裁剪块）：
 - **docker** 在 docker 模式恢复：`MULTIUSER`+全套 namespaces、`USER_NS`、`MEMCG`、`CPUSETS`、`CGROUP_*` controllers、`CGROUP_SCHED`+`FAIR_GROUP_SCHED`+`CFS_BANDWIDTH`、`BLK_CGROUP` 全链、`OVERLAY_FS`/`VETH`/`MACVLAN`/`IPVLAN`/`BRIDGE`(=m)、`BINFMT_MISC`。注意 H1 节原本无条件再砍 `BRIDGE`，已加 docker 守卫；`FREEZER` 同理（由 `CGROUP_FREEZER` select）。
-- **ebpf** 在 ebpf 模式恢复：`BPF_SYSCALL`/`BPF_JIT`/`BPF_JIT_DEFAULT_ON`/`BPF_UNPRIV_DEFAULT_OFF`/`BPF_LSM`、`CGROUP_BPF`、`NETFILTER_BPF_LINK`、`BPF_STREAM_PARSER`、`XDP_SOCKETS`、`LWTUNNEL(_BPF)`+`IPV6_SEG6_LWTUNNEL`+`IPV6_SEG6_BPF`、`NET_CLS_BPF`/`NET_ACT_BPF`(=m)、`BPF_EVENTS` 及其 tracing 闭包（`FTRACE`/`PERF_EVENTS`/`KALLSYMS`/`KPROBES`/`KPROBE_EVENTS`/`UPROBES`/`UPROBE_EVENTS`/`TRACEPOINTS`/`TRACING_SUPPORT`）+ `ARM_PMU(_V3)`/`HW_PERF_EVENTS`、`SECURITY`/`SYSFS`/`MULTIUSER`（`BPF_LSM` 的依赖链）、`DEBUG_KERNEL`+`DEBUG_INFO_DWARF5`+`DEBUG_INFO`+`DEBUG_INFO_BTF`(+MODULES，CO-RE 必需)，另写 `CONFIG_LSM="lockdown,yama,integrity,bpf"`。`BPF_JIT_ALWAYS_ON` 按指南保持 **n**。注意 `FTRACE` 只开框架，tracer 仍全砍。
+- **eBPF 栈**（`full` 专有，`ENABLE_EBPF=1`）恢复：`BPF_SYSCALL`/`BPF_JIT`/`BPF_JIT_DEFAULT_ON`/`BPF_UNPRIV_DEFAULT_OFF`/`BPF_LSM`、`CGROUP_BPF`、`NETFILTER_BPF_LINK`、`BPF_STREAM_PARSER`、`XDP_SOCKETS`、`LWTUNNEL(_BPF)`+`IPV6_SEG6_LWTUNNEL`+`IPV6_SEG6_BPF`、`NET_CLS_BPF`/`NET_ACT_BPF`(=m)、`BPF_EVENTS` 及其 tracing 闭包（`FTRACE`/`PERF_EVENTS`/`KALLSYMS`/`KPROBES`/`KPROBE_EVENTS`/`UPROBES`/`UPROBE_EVENTS`/`TRACEPOINTS`/`TRACING_SUPPORT`）+ `ARM_PMU(_V3)`/`HW_PERF_EVENTS`、`SECURITY`/`SYSFS`/`MULTIUSER`（`BPF_LSM` 的依赖链）、`DEBUG_KERNEL`+`DEBUG_INFO_DWARF5`+`DEBUG_INFO`+`DEBUG_INFO_BTF`(+MODULES，CO-RE 必需)，另写 `CONFIG_LSM="lockdown,yama,integrity,bpf"`。`BPF_JIT_ALWAYS_ON` 按指南保持 **n**。注意 `FTRACE` 只开框架，tracer 仍全砍。另有 cgroup CPU 控制四项（`CGROUP_SCHED`/`FAIR_GROUP_SCHED`/`CFS_BANDWIDTH`/`CGROUP_CPUACCT`），landscape 检查清单明确要求。
   - 新节 **B.1** 保留 tc 挂载点 `NET_CLS`/`NET_CLS_ACT`/`NET_SCH_INGRESS`(clsact)——B 节原本无条件砍，会让 `NET_CLS_BPF`/`NET_ACT_BPF` 失去依赖而静默失效。
   - 对齐目标：[landscape 官方内核指南](https://landscape.whileaway.dev/zh/intro/requirements.html)。**唯一有意偏离**：`NETFILTER_XT_MATCH_BPF` 未开（依赖 `NETFILTER_XTABLES`，而 `IP_NF_*`/`IP6_NF_*` 已全砍，没有 iptables 链可挂；landscape 数据面走 XDP/TC eBPF，与 iptables 无关）。
 - 脚本运行后把模式写入 `.trim-mode` 标记文件（gitignored），供扩展钩子读取——见下方"扩展钩子模式同步"。
 
-**已知未决（需实机验证）**：docker 模式下钩子仍砍掉全部 `IP_NF_*`/xtables，故 Docker 默认 iptables 后端不可用，需让 Docker 走 nftables 后端或 `--iptables=false`。容器/eBPF 的完整依赖闭包尚未跑 olddefconfig 验证——ebpf 模式的闭包是按 Kconfig 依赖推导补齐的（2026-09-28，landscape 支持），**首次 `--mode ebpf` 构建后必须核对该模式产物里指南各项是否真的落地**。
+**已知未决（需实机验证）**：docker 模式下钩子仍砍掉全部 `IP_NF_*`/xtables，故 Docker 默认 iptables 后端不可用，需让 Docker 走 nftables 后端或 `--iptables=false`。容器/eBPF 的依赖闭包已由 CI 在**真实编译产物** `boot/config-*` 上校验通过（2026-09-28，run 36406456627），CI 里加了 full 模式门控的闭包自检，回归会自动 fail。
 
 **注意**：仓库里 commit 的 `kernel/rockchip64-current/linux-rockchip64-current.config` 是 2026-08-03 生成的旧产物，与当前脚本输出已有漂移（`NET_SCHED`、`TCP_CONG_BBR`、`R8169` 等约 15 处）。要构建哪个模式就重跑对应 `--mode` 覆盖它。
 
@@ -155,22 +155,23 @@ When editing trimming logic: the red-line lists encode hard requirements for the
 - **IP_MULTICAST**：撤回禁用，IPv6 NDP 邻居发现依赖组播（v2.10 误裁）
 - **RTC_DRV_HYM8563**：再次撤回，R3S 板载 RTC（DTB rtc@51），砍掉导致 rtc0 缺失、TLS 校时失败
 
-**v2.13 (2026-09-28, current):** ebpf/full 模式对齐 landscape 官方内核指南
+**v2.13 (2026-09-28, current):** full 模式的 eBPF 栈对齐 landscape 官方内核指南 + 模式收敛为三种
 - 背景：准备在 R3S 上跑 landscape router（Rust + eBPF，程序动态挂到 XDP/TC，不走 iptables）。
-- **新增 B.1 节**：ebpf 模式下保留 tc 挂载点 `NET_CLS`/`NET_CLS_ACT`/`NET_SCH_INGRESS`(clsact)。此前 B 节无条件砍掉它们，而 K 节又 `set_y NET_CLS_BPF`/`NET_ACT_BPF` —— 依赖不满足，olddefconfig 会把这两项**静默丢弃**。guides 要求 =m。
-- **K 节 ebpf 分支重写**：补齐指南全部条目及其依赖闭包（详见上方"裁剪模式"小节）。`BPF_JIT_ALWAYS_ON` 由 =y 改为 **n**（指南要求保留解释器回退），新增 `BPF_JIT_DEFAULT_ON`/`BPF_UNPRIV_DEFAULT_OFF`/`BPF_LSM`/`BPF_STREAM_PARSER`/`NETFILTER_BPF_LINK`/`LWTUNNEL(_BPF)`/`IPV6_SEG6_LWTUNNEL`+`IPV6_SEG6_BPF`/`NET_SOCK_MSG`。
+- **新增 B.1 节**：full 模式下保留 tc 挂载点 `NET_CLS`/`NET_CLS_ACT`/`NET_SCH_INGRESS`(clsact)。此前 B 节无条件砍掉它们，而 K 节又 `set_y NET_CLS_BPF`/`NET_ACT_BPF` —— 依赖不满足，olddefconfig 会把这两项**静默丢弃**。guides 要求 =m。
+- **K 节 eBPF 分支重写**：补齐指南全部条目及其依赖闭包（详见上方"裁剪模式"小节）。`BPF_JIT_ALWAYS_ON` 由 =y 改为 **n**（指南要求保留解释器回退），新增 `BPF_JIT_DEFAULT_ON`/`BPF_UNPRIV_DEFAULT_OFF`/`BPF_LSM`/`BPF_STREAM_PARSER`/`NETFILTER_BPF_LINK`/`LWTUNNEL(_BPF)`/`IPV6_SEG6_LWTUNNEL`+`IPV6_SEG6_BPF`/`NET_SOCK_MSG`。
 - **修复 `BPF_EVENTS` 静默失效**：此前 `set_y BPF_EVENTS` 但 `PERF_EVENTS`/`KPROBES`/`TRACING_SUPPORT` 等在 Y 节被无条件砍掉，依赖不满足 → 该 set_y 从来没有生效过。现为 ebpf 模式补齐整条 tracing 闭包，并给 Y/Y.4/Y.5/Y.7 的 `PERF_EVENTS`/`KALLSYMS`/`ARM_PMU(_V3)`/`HW_PERF_EVENTS`/`TRACING_SUPPORT` 加 eBPF 守卫。
 - **`FTRACE` 是 `BPF_EVENTS` 的硬前置**（易漏）：`BPF_EVENTS`/`KPROBE_EVENTS`/`UPROBE_EVENTS` 在 `kernel/trace/Kconfig` 里被一对 `if FTRACE`(194) / `endif`(1241) 包着，`FTRACE=n` 时它们恒为 n，跟别的依赖满不满足无关。F 节原本无条件 `unset_k FTRACE`，已改为按模式守卫。注意只开 `FTRACE` 框架即可，具体 tracer（`FUNCTION_TRACER` 等）仍然全砍。
-- **`BPF_LSM` 依赖链**：`BPF_LSM → BPF_EVENTS && BPF_SYSCALL && SECURITY && BPF_JIT`，而 `SECURITY depends on SYSFS && MULTIUSER`。所以 ebpf 模式下 **`MULTIUSER` 必须一起开**（Y.8 原本只在 docker 模式开），并显式 `set_y SECURITY`/`SYSFS`。顺带修正了 CLAUDE.md 旧说法：v2.12 的 MULTIUSER 恢复其实只覆盖 docker 模式。
+- **`BPF_LSM` 依赖链**：`BPF_LSM → BPF_EVENTS && BPF_SYSCALL && SECURITY && BPF_JIT`，而 `SECURITY depends on SYSFS && MULTIUSER`。所以 full 模式下 **`MULTIUSER` 必须一起开**（Y.8 原本只在 docker 模式开），并显式 `set_y SECURITY`/`SYSFS`。顺带修正了 CLAUDE.md 旧说法：v2.12 的 MULTIUSER 恢复其实只覆盖 docker 模式。
 - **模式结构统一为「ebpf 基底 + docker 叠加」**：`full` 不是与 `ebpf` 并列的独立组合，而是在 ebpf 生效之后补上容器栈。Y.8 的 MULTIUSER 段原写作 `if [[ $ENABLE_DOCKER -eq 0 && $ENABLE_EBPF -eq 0 ]]`（排除式，读起来像"二选一"），已改成 ebpf 基底块 + docker 叠加块各自声明自己的需求（`set_y` 幂等，重复设置无害）。以后新增"两个模式都要"的符号都按这个形状写，不要写排除式条件。
-- **`CONFIG_LSM`**：新增 `set_str` 辅助函数；ebpf 模式写 `"lockdown,yama,integrity,bpf"`（Armbian 默认串不含 `bpf`，不写则 BPF LSM 不注册）。
-- **BTF 可见性链：`DEBUG_KERNEL` + `DEBUG_INFO_DWARF5` 都砍不得**。`DEBUG_INFO_BTF` 在 `lib/Kconfig.debug` 里位于 `if DEBUG_INFO` 块内；`DEBUG_INFO` 是隐藏 bool，只由 "Debug information" choice 的成员 `select` 进来；而那个 choice 是 `depends on DEBUG_KERNEL` 且**没有 `default`**（不点名成员就落回第一个成员 `DEBUG_INFO_NONE`）。所以原来无条件 `unset_k DEBUG_KERNEL`（Y.2）和 `unset_k DEBUG_INFO_DWARF5`（Y 节）会让 BTF 永远不可见 —— 这正是 landscape 官方说明让你在 menuconfig 里先选 "Debug information (Generate DWARF Version 5 debuginfo)" 再选 "Generate BTF type information" 的原因。ebpf 模式现改为 `set_y DEBUG_KERNEL` + `set_y DEBUG_INFO_DWARF5`；`DEBUG_INFO_SPLIT`/`DEBUG_INFO_REDUCED` 仍保持 n（BTF 依赖它们为 n）。
-- **`DEBUG_INFO_NONE` 必须两种模式都摘**：baseline 里它本来就是 `=y`，而 `unset_k DEBUG_INFO_NONE` 原本被关在 `ENABLE_EBPF -eq 0` 分支内 → ebpf/full 产物里会出现 `DEBUG_INFO_NONE=y` 和 `DEBUG_INFO_DWARF5=y` **同时成立**的非法 choice 状态（谁赢取决于 olddefconfig 读文件顺序，不能赌）。现已移出条件，无条件 unset。minimal 下摘掉也安全：choice 无成员被选时，kconfig 仍落回默认的第一个成员 `DEBUG_INFO_NONE`，调试信息一样关着。
+- **`CONFIG_LSM`**：新增 `set_str` 辅助函数；full 模式写 `"lockdown,yama,integrity,bpf"`（Armbian 默认串不含 `bpf`，不写则 BPF LSM 不注册）。
+- **BTF 可见性链：`DEBUG_KERNEL` + `DEBUG_INFO_DWARF5` 都砍不得**。`DEBUG_INFO_BTF` 在 `lib/Kconfig.debug` 里位于 `if DEBUG_INFO` 块内；`DEBUG_INFO` 是隐藏 bool，只由 "Debug information" choice 的成员 `select` 进来；而那个 choice 是 `depends on DEBUG_KERNEL` 且**没有 `default`**（不点名成员就落回第一个成员 `DEBUG_INFO_NONE`）。所以原来无条件 `unset_k DEBUG_KERNEL`（Y.2）和 `unset_k DEBUG_INFO_DWARF5`（Y 节）会让 BTF 永远不可见 —— 这正是 landscape 官方说明让你在 menuconfig 里先选 "Debug information (Generate DWARF Version 5 debuginfo)" 再选 "Generate BTF type information" 的原因。full 模式现改为 `set_y DEBUG_KERNEL` + `set_y DEBUG_INFO_DWARF5`；`DEBUG_INFO_SPLIT`/`DEBUG_INFO_REDUCED` 仍保持 n（BTF 依赖它们为 n）。
+- **`DEBUG_INFO_NONE` 必须两种模式都摘**：baseline 里它本来就是 `=y`，而 `unset_k DEBUG_INFO_NONE` 原本被关在 `ENABLE_EBPF -eq 0` 分支内 → full 产物里会出现 `DEBUG_INFO_NONE=y` 和 `DEBUG_INFO_DWARF5=y` **同时成立**的非法 choice 状态（谁赢取决于 olddefconfig 读文件顺序，不能赌）。现已移出条件，无条件 unset。minimal 下摘掉也安全：choice 无成员被选时，kconfig 仍落回默认的第一个成员 `DEBUG_INFO_NONE`，调试信息一样关着。
 - **构建机需 pahole ≥ 1.21**：`DEBUG_INFO_BTF` 有 `depends on PAHOLE_VERSION >= 116` 和 `depends on DEBUG_INFO_DWARF4 || PAHOLE_VERSION >= 121`；选了 DWARF5 就必须靠后者，pahole 太老会让 BTF 静默消失。这是宿主机软件问题，与 `KERNEL_BTF` 设置无关。
-- **`KERNEL_BTF="no"` 会顶掉 BTF，且不能改成 `"yes"`**：Armbian 在 `KERNEL_BTF=no` 时把 `DEBUG_INFO_NONE` 塞进 `opts_y`，而 `armbian_kernel_config_apply_opts_from_arrays()` 的施加顺序是 `opts_n` → `opts_y` → `opts_m`（**后写覆盖先写**），于是 `DEBUG_INFO_NONE=y` 盖掉我们 opts_n 里的 disable → `DEBUG_INFO=n` → BTF 起不来。钩子已加 `remove_from_y_ebpf=("DEBUG_INFO_NONE")`，仅在 ebpf 模式下从 opts_y 摘掉它。改成 `KERNEL_BTF="yes"` 反而有害：Armbian 会强制 `BPF_JIT_ALWAYS_ON=y`（与指南相反）并要求构建机 ≥6451 MiB 可用内存。
+- **`KERNEL_BTF="no"` 会顶掉 BTF，且不能改成 `"yes"`**：Armbian 在 `KERNEL_BTF=no` 时把 `DEBUG_INFO_NONE` 塞进 `opts_y`，而 `armbian_kernel_config_apply_opts_from_arrays()` 的施加顺序是 `opts_n` → `opts_y` → `opts_m`（**后写覆盖先写**），于是 `DEBUG_INFO_NONE=y` 盖掉我们 opts_n 里的 disable → `DEBUG_INFO=n` → BTF 起不来。钩子已加 `remove_from_y_ebpf=("DEBUG_INFO_NONE")`，仅在 full 模式下从 opts_y 摘掉它。改成 `KERNEL_BTF="yes"` 反而有害：Armbian 会强制 `BPF_JIT_ALWAYS_ON=y`（与指南相反）并要求构建机 ≥6451 MiB 可用内存。
+- **模式收敛为三种**：删掉独立的 `ebpf` 模式，只留 `minimal` / `docker` / `full`（`full` = 原 `ebpf` + docker）。脚本里 `--mode ebpf` 现在直接报错；钩子遇到遗留的 `R3S_TRIM_MODE=ebpf` 会告警并**按 full 处理**（而不是退回 minimal——静默丢掉 eBPF 栈的后果更难发现）。CI matrix 同步改为三种。
 - **有意偏离指南**：`NETFILTER_XT_MATCH_BPF` 未开。它依赖 `NETFILTER_XTABLES`，而 `IP_NF_*`/`IP6_NF_*` 已全砍 —— 没有 iptables 链可挂，开了也是死模块；landscape 数据面与 iptables 无关。已在 A 节注释说明。
-- **扩展钩子**：ebpf 的 keep_set 扩到 42 项闭包（新增 tc 框架、tracing 栈含 FTRACE、PMU、SECURITY/SYSFS/MULTIUSER、DEBUG_KERNEL/DEBUG_INFO_DWARF5 等），并**移除** `BPF_JIT_ALWAYS_ON`（要让 opts_n 把它压成 n）。
-- 计数：minimal 871（未变）、ebpf 883→**910**、docker 907、full 917→**943**。
+- **扩展钩子**：eBPF 栈的 keep_set 扩到 46 项闭包（新增 tc 框架、tracing 栈含 FTRACE、PMU、SECURITY/SYSFS/MULTIUSER、DEBUG_KERNEL/DEBUG_INFO_DWARF5 等），并**移除** `BPF_JIT_ALWAYS_ON`（要让 opts_n 把它压成 n）。
+- 计数（三模式）：minimal 871（未变）、docker 907（未变）、full 917→**943**。
 - **未验证**：闭包参照 mainline v6.18 Kconfig 逐条核对（含 `if FTRACE` 这类纯文本包裹关系），但**未跑 olddefconfig / 实机编译**（缺解包内核源码）；`DEBUG_INFO_BTF` 还依赖构建机 **pahole ≥1.21**。首次构建后须核对产物。
 - **残留风险**：`opts_m` 在 `opts_y` 之后施加，若 Armbian 的 `opts_m` 里含本闭包中"必须 =y"的 bool 符号，会被降级成 `=m`（对 bool 非法）。既有 docker 模式用同一套 keep_set 未暴露此问题，推测这些符号不在 opts_m；若构建日志出现 `symbol value 'm' invalid` 报错，把对应符号按现有 `keep_y` 写法加进"只从 opts_m 剔除"的名单即可。
 
@@ -180,7 +181,7 @@ When editing trimming logic: the red-line lists encode hard requirements for the
   - 输入：root-level `linux-rockchip64-current.config.baseline` → `samples/linux-rockchip64-current.config.baseline`
   - 输出：root-level `linux-rockchip64-current.config` → `kernel/rockchip64-current/linux-rockchip64-current.config`
   - 清理 root 级别遗留 config 文件
-- **裁剪模式 `--mode` 参数**（32320f3）：新增四种模式（见上方"裁剪模式"章节），脚本内用 `ENABLE_DOCKER` / `ENABLE_EBPF` 标志包裹原裁剪块。C 节（容器网络/store）、K 节（BPF 终结者）、M 节（systemd cgroup）、Y.3/ Y.6/ Y.10 各节均按标志有条件执行。
+- **裁剪模式 `--mode` 参数**（32320f3）：新增四种模式（v2.13 收敛为三种，见上方"裁剪模式"章节），脚本内用 `ENABLE_DOCKER` / `ENABLE_EBPF` 标志包裹原裁剪块。C 节（容器网络/store）、K 节（BPF 终结者）、M 节（systemd cgroup）、Y.3/ Y.6/ Y.10 各节均按标志有条件执行。
 - **扩展钩子模式同步**（32320f3）：`extensions/nanopir3s-kconfig.sh` 新增 keep_set 机制——从 `.trim-mode` 标记文件或 `R3S_TRIM_MODE` 环境变量检测当前模式，docker/ebpf 保护符号在 opts_y/opts_m 过滤、opts_n 追加、.config 直写三处全部跳过。解决 trim 脚本开启的项被钩子再次关闭的问题。
 - **脚本输出增强**：末尾新增生成 config 的 =y / =m / 合计 计数 + 模式打印。
 - 实测数据：minimal 860(y/m)，ebpf 872，docker 894，full 906。基线 888(y/m)。
@@ -452,6 +453,6 @@ NanoPi R3S: **RK3566** (quad Cortex-A55), **2GB** RAM, 2x GbE (RTL8211F + RTL811
 
 - Custom shell scripts use Chinese comments/log output and colorized `info`/`warn`/`err`/`ok` helpers. Match that style when extending them.
 - `config-nanopir3s.conf` is the R3S build parameter file for Armbian's `compile.sh`.
-- `extensions/nanopir3s-kconfig.sh` is the Armbian extension hook that removes unwanted items from Armbian's `opts_y`/`opts_m` arrays (BPF/AppArmor/systemd cgroup/ebtables/xtables/容器网络等) and adds `opts_n` as double insurance before olddefconfig. v2.12 新增 keep_set 机制：从 `.trim-mode` 标记文件或 `R3S_TRIM_MODE` 环境变量检测裁剪模式，docker/ebpf 模式下保护符号在 opts_y 过滤、opts_m 过滤、opts_n 追加、.config 直写四处全部跳过，避免 trim 脚本开启的项被钩子再次关闭。
+- `extensions/nanopir3s-kconfig.sh` is the Armbian extension hook that removes unwanted items from Armbian's `opts_y`/`opts_m` arrays (BPF/AppArmor/systemd cgroup/ebtables/xtables/容器网络等) and adds `opts_n` as double insurance before olddefconfig. v2.12 新增 keep_set 机制：从 `.trim-mode` 标记文件或 `R3S_TRIM_MODE` 环境变量检测裁剪模式，docker/full 模式下保护符号在 opts_y 过滤、opts_m 过滤、opts_n 追加、.config 直写四处全部跳过，避免 trim 脚本开启的项被钩子再次关闭。
 - `*.config.bak.*`, `*.baseline`, and `trim-r3s.log` are generated artifacts, not source.
 - `samples/linux-rockchip64-current.config.base` is the untrimmed Armbian default config (4447 items, 1877 y/m); `samples/linux-rockchip64-current.config.baseline` is the v2.11 裁剪产物的 olddefconfig 解析结果（2788 项，其中 888 y/m），作为 trim-r3s-kernel.sh 的输入基线。

@@ -2,7 +2,7 @@
 # 独立构建裁剪内核 + u-boot + dtb + modules，打包为 boot bundle 发布到 Release，
 # 供 nanopi-r3s-img 的 build_img workflow 直接下载引用（无需每次现场编译 Armbian）。
 #
-# 一次触发编译全部 4 种裁剪模式（matrix 并行），统一发布到同一个 Release：
+# 一次触发编译全部 3 种裁剪模式（matrix 并行），统一发布到同一个 Release：
 #   Release tag：kernel-YYYYMMDD
 #   Release 资产命名：armbian-boot-rk3566-<mode>.tar.gz（按模式区分）
 # img 构建时按 kernel_mode 下载对应模式的资产。
@@ -17,7 +17,7 @@ permissions:
 
 env:
   ARMBIAN_BUILD_DIR: /tmp/armbian-build
-  # ccache 上限 2G/模式（4 模式 ≈ 8GB + 源码 1GB，压在 GitHub 免费 10GB 缓存额度内）
+  # ccache 上限 2G/模式（3 模式 ≈ 6GB + 源码 1GB，压在 GitHub 免费 10GB 缓存额度内）
   CCACHE_MAXSIZE: 2G
 
 jobs:
@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kernel_mode: [minimal, docker, ebpf, full]
+        kernel_mode: [minimal, docker, full]
     name: build-kernel-${{ matrix.kernel_mode }}
     env:
       KERNEL_MODE: ${{ matrix.kernel_mode }}
@@ -119,7 +119,7 @@ jobs:
       #     Armbian 只认 userpatches/linux-nanopi-r3s-current.config；
       #     trim 脚本的输出落在 userpatches/kernel/rockchip64-current/ 下，
       #     少了这一步拷贝，Armbian 拿到的就是仓库根那份（恒为 minimal 状态），
-      #     docker/ebpf 模式会静默失效——钩子只能"不关"符号，不能"打开"。
+      #     docker/full 模式会静默失效——钩子只能"不关"符号，不能"打开"。
       # ----------------------------------------------------------
       - name: Trim kernel config (${{ env.KERNEL_MODE }})
         run: |
@@ -140,10 +140,6 @@ jobs:
                 grep -q "^CONFIG_${k}=y" linux-nanopi-r3s-current.config \
                   || { echo "错误: ${{ env.KERNEL_MODE }} 模式下 CONFIG_${k} 未启用"; exit 1; }
               done
-              ;;
-            ebpf)
-              grep -q '^CONFIG_BPF_SYSCALL=y' linux-nanopi-r3s-current.config \
-                || { echo "错误: ebpf 模式下 CONFIG_BPF_SYSCALL 未启用"; exit 1; }
               ;;
           esac
           echo "=== 模式标志位自检通过 ==="
@@ -267,7 +263,7 @@ jobs:
           [ "${fail}" -eq 0 ] || { echo "产物缺少核心符号，中止发布" >&2; exit 1; }
 
       # ----------------------------------------------------------
-      # 4c. eBPF/landscape 闭包自检（仅 ebpf / full 模式）
+      # 4c. eBPF/landscape 闭包自检（仅 full 模式）
       #     这些符号一旦断链，olddefconfig 与扩展钩子只会**静默丢弃**，编译不会报错，
       #     所以必须核对产物而不是核对 trim 脚本的输出。已知会静默失效的环节：
       #       · FTRACE=n → BPF_EVENTS/KPROBE_EVENTS 恒 n（它们在 if FTRACE 块内）
@@ -275,7 +271,7 @@ jobs:
       #       · 构建机 pahole < 1.21 → DEBUG_INFO_BTF 不可见（runner 上最容易踩）
       # ----------------------------------------------------------
       - name: Verify eBPF/landscape closure in built config
-        if: matrix.kernel_mode == 'ebpf' || matrix.kernel_mode == 'full'
+        if: matrix.kernel_mode == 'full'
         run: |
           CFG=$(ls /tmp/boot-bundle/boot/config-* 2>/dev/null | head -1)
           [ -n "${CFG}" ] || { echo "错误: 产物中未找到 boot/config-*"; exit 1; }
@@ -289,6 +285,7 @@ jobs:
                    FTRACE PERF_EVENTS KALLSYMS KPROBES KPROBE_EVENTS TRACEPOINTS TRACING_SUPPORT \
                    NET_CLS NET_CLS_ACT NET_SCH_INGRESS LWTUNNEL LWTUNNEL_BPF \
                    IPV6_SEG6_LWTUNNEL IPV6_SEG6_BPF SECURITY SYSFS MULTIUSER \
+                   CGROUP_SCHED FAIR_GROUP_SCHED CFS_BANDWIDTH CGROUP_CPUACCT \
                    DEBUG_KERNEL DEBUG_INFO DEBUG_INFO_DWARF5 DEBUG_INFO_BTF DEBUG_INFO_BTF_MODULES; do
             v=$(grep -m1 -oE "^CONFIG_${k}=y" "${CFG}" | cut -d= -f2 || true)
             if [ -n "${v}" ]; then echo "  ✓ CONFIG_${k}=y"

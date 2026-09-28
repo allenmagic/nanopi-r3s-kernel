@@ -30,24 +30,23 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 #   ./trim-r3s-kernel.sh                    # 默认 minimal 模式
 #   ./trim-r3s-kernel.sh --mode minimal     # 纯路由器（最小裁剪）
 #   ./trim-r3s-kernel.sh --mode docker      # 支持 Docker/Podman 容器
-#   ./trim-r3s-kernel.sh --mode ebpf        # 支持 eBPF 数据面/工具链（landscape/cilium/bpftrace/bcc）
-#   ./trim-r3s-kernel.sh --mode full        # Docker + eBPF 全开
+#   ./trim-r3s-kernel.sh --mode full        # Docker + eBPF/landscape 全开
 TRIM_MODE="minimal"
 
 usage() {
 	cat <<EOF
-Usage: $(basename "$0") [--mode <minimal|docker|ebpf|full>] [-h|--help]
+Usage: $(basename "$0") [--mode <minimal|docker|full>] [-h|--help]
 
-裁剪模式：
-  minimal  纯路由器（默认），最大限度裁剪，~879 项 y/m
-  docker   保留容器栈（namespaces/cgroup controllers/OVERLAY_FS/VETH/BRIDGE）
-  ebpf     保留 eBPF 数据面/工具链（landscape router、cilium、bpftrace、bcc）
+裁剪模式（三者互为基础：docker = minimal + 容器；full = docker + eBPF/landscape）：
+  minimal  纯路由器（默认），最大限度裁剪
+  docker   在 minimal 之上加容器栈
+           （namespaces / cgroup controllers / OVERLAY_FS / VETH / MACVLAN / BRIDGE）
+  full     在 docker 之上再加 eBPF 数据面/工具链（landscape router、cilium、bpftrace、bcc）
            对齐 landscape 官方内核指南：BPF_SYSCALL/JIT/LSM/CGROUP_BPF、
            tc-bpf（NET_CLS/NET_CLS_ACT/NET_SCH_INGRESS + NET_CLS_BPF/NET_ACT_BPF）、
            LWTUNNEL_BPF/IPV6_SEG6_BPF、BPF_STREAM_PARSER、BPF_EVENTS 及其 tracing
-           闭包、XDP_SOCKETS、BTF（CO-RE）。唯一未开的是 NETFILTER_XT_MATCH_BPF，
-           原因见 A 节注释。
-  full     docker + ebpf 全开
+           闭包、cgroup CPU 控制、XDP_SOCKETS、BTF（CO-RE）。
+           唯一未开的是 NETFILTER_XT_MATCH_BPF，原因见 A 节注释。
 EOF
 }
 
@@ -77,10 +76,9 @@ ENABLE_EBPF=0
 case "$TRIM_MODE" in
 	minimal) ;;
 	docker)  ENABLE_DOCKER=1 ;;
-	ebpf)    ENABLE_EBPF=1 ;;
 	full)    ENABLE_DOCKER=1; ENABLE_EBPF=1 ;;
 	*)
-		err "未知 --mode: $TRIM_MODE (可选：minimal|docker|ebpf|full)"
+		err "未知 --mode: $TRIM_MODE (可选：minimal|docker|full)"
 		usage; exit 1
 		;;
 esac
@@ -1195,6 +1193,21 @@ else
 	unset_k CGROUP_MISC
 	unset_k CGROUP_DMEM
 	unset_k RT_GROUP_SCHED
+fi
+
+# ---- cgroup CPU 控制：eBPF 基底 ----
+# landscape 检查清单明确要求「开启 Cgroups 的 CPU 控制」。它跟容器无关，是独立需求：
+#   CGROUP_SCHED      cpu controller 的存在前提
+#   FAIR_GROUP_SCHED  把 CFS 任务挂进 cgroup（cpu.weight 靠它）
+#   CFS_BANDWIDTH     cpu.max 限流本体
+#   CGROUP_CPUACCT    CPU 用量统计
+# 上面 docker 分支已经开过一遍（容器 --cpus 也要它），这里只为 ebpf 补上；
+# 两者都没开（minimal）时仍是上面 M 节 if 分支关掉的关闭状态。
+if [[ $ENABLE_EBPF -eq 1 ]]; then
+	set_y CGROUP_SCHED
+	set_y FAIR_GROUP_SCHED
+	set_y CFS_BANDWIDTH
+	set_y CGROUP_CPUACCT
 fi
 
 # =============================================================================
