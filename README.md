@@ -31,7 +31,9 @@ nanopi-r3s-kernel/
 
 **硬件**: NanoPi R3S (RK3566, 2GB RAM, 2× GbE)  
 **内核**: Linux 6.18 arm64  
-**软件**: OpenRC + nftables + sing-box + WireGuard + tailscale + cloudflared/WARP + easytier
+**软件**: nftables + dnsmasq 为底，WireGuard 由内核提供；按 `INFRA` 叠加 tailscale +
+cloudflared，`sing-box` 模式再由 sing-box 接管 DNS（`landscape` 规划中）。
+init 随发行版：OpenRC（alpine/gentoo）、systemd（debian）、sysvinit（devuan）、runit（void）。
 
 ## 本地裁剪（可选，无需 Armbian 构建环境）
 
