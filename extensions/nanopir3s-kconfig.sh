@@ -369,14 +369,12 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 
 		# --- nftables 多余模块 ---
 		"NFT_OSF" "NFT_XFRM" "NFT_SYNPROXY" "NFT_TUNNEL" "NFT_NUMGEN"
-		"NFT_CONNLIMIT" "NFT_QUEUE"     # connlimit + NFQUEUE
-		"NFT_BRIDGE_META" "NFT_BRIDGE_REJECT"   # bridge nftables
-		"NFT_FIB_NETDEV" "NFT_REJECT_NETDEV"    # netdev nftables
+		"NFT_CONNLIMIT" "NFT_BRIDGE_META" "NFT_BRIDGE_REJECT"
 
 		# --- netfilter 调试/日志框架 ---
 		"NETFILTER_NETLINK" "NETFILTER_NETLINK_ACCT"
 		"NETFILTER_NETLINK_HOOK" "NETFILTER_NETLINK_LOG"
-		"NETFILTER_NETLINK_OSF" "NETFILTER_NETLINK_QUEUE"
+		"NETFILTER_NETLINK_OSF"
 		"NETFILTER_SYNPROXY" "NETFILTER_CONNCOUNT"
 
 		# --- tc 残留 ---
@@ -392,12 +390,10 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 
 		# --- v2.1 新增：nftables 冗余模块 + conntrack 瘦身 ---
 		"NFT_DUP_NETDEV" "NFT_FWD_NETDEV" "NFT_QUOTA" "NFT_HASH"
-		"NFT_SOCKET" "NFT_TPROXY"
-		"NFT_FIB" "NFT_FIB_INET" "NFT_FIB_IPV4" "NFT_FIB_IPV6" "NFT_FIB_NETDEV"
+		"NFT_SOCKET" "NFT_TPROXY" "NFT_FIB_NETDEV"
 		"NF_SOCKET_IPV4" "NF_TPROXY_IPV4" "NF_SOCKET_IPV6" "NF_TPROXY_IPV6"
 		"NF_DUP_NETDEV" "NF_DUP_IPV4" "NF_DUP_IPV6" "NFT_DUP_IPV4" "NFT_DUP_IPV6"
-		"NF_TABLES_BRIDGE"
-		"NET_IP_TUNNEL" "NET_UDP_TUNNEL"
+		"NF_TABLES_BRIDGE" "NET_IP_TUNNEL"
 		"DUMMY"                        # v2.4: dummy 虚拟网卡（opts_m 注入）
 	)
 
@@ -680,7 +676,6 @@ opts_n+=("NETFILTER_NETLINK_ACCT")
 opts_n+=("NETFILTER_NETLINK_HOOK")
 opts_n+=("NETFILTER_NETLINK_LOG")
 opts_n+=("NETFILTER_NETLINK_OSF")
-opts_n+=("NETFILTER_NETLINK_QUEUE")
 opts_n+=("NETFILTER_SYNPROXY")
 opts_n+=("NETFILTER_XTABLES")
 opts_n+=("NETFILTER_XTABLES_LEGACY")
