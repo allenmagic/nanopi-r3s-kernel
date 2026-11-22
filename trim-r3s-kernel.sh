@@ -762,6 +762,9 @@ set_y NETFILTER
 set_y NF_CONNTRACK
 set_y NF_CONNTRACK_PROCFS    # /proc/net/nf_conntrack；mainline 默认 n，显式打开
 set_y NF_NAT
+set_y NF_NAT_MASQUERADE      # nft masquerade 的 NAT 实现
+set_y NF_NAT_REDIRECT        # nft redirect 的 NAT 实现（LAN DNS 归口）
+set_y NETFILTER_NETLINK      # nf_tables 的 netlink 通道（不是 iptables）
 
 # 路由器核心：nftables 框架和 NAT 组件全部编译进内核（=y）
 set_y NF_TABLES
@@ -1819,8 +1822,9 @@ unset_k NF_CONNTRACK_LABELS
 unset_k NF_CONNTRACK_ZONES
 unset_k NF_CONNTRACK_EVENTS
 
-# conntrack netlink 接口（用户态 conntrack 工具不需要）
-unset_k NETFILTER_NETLINK
+# NETFILTER_NETLINK 不能砍：nf_tables 的 netlink 通道依赖它（不是 iptables）。
+# 用户态 conntrack 工具不需要的是 NF_CT_NETLINK，见 A.2/H 节。
+set_y NETFILTER_NETLINK
 
 # bridge netfilter — 桥接已砍，bridge netfilter 无意义
 unset_k NETFILTER_FAMILY_BRIDGE
@@ -2080,6 +2084,69 @@ if [[ $ENABLE_DOCKER -eq 1 ]]; then
 	set_y CGROUP_NS
 	set_y TIME_NS
 	set_y POSIX_MQUEUE           # docker 容器内 IPC 可能用
+
+	# ------------------------------------------------------------------
+	# Docker/Podman 容器栈（纯 nftables 路线，不开 iptables/xtables）
+	#   - 容器核心：cgroup/seccomp/keys/块设备限流
+	#   - 容器网络：veth/bridge/macvlan/ipvlan/vxlan/dummy
+	#   - nftables：netavark 的 nft 后端需要 NFT_FIB_INET；sing-box bridge
+	#     走 inet 表 + masquerade + forward mangle
+	#   这一段放在所有 unset_k 之后，作为 docker/full 的最终覆盖。
+	# ------------------------------------------------------------------
+	info "    ${YELLOW}[Docker 模式]${NC} 容器 + nftables 闭包（无 iptables/xtables）"
+
+	# 容器核心
+	set_y KEYS
+	set_y SECCOMP
+	set_y SECCOMP_FILTER
+	set_y PROC_PID_CPUSET
+	set_y BLK_DEV_THROTTLING
+	set_y MEMCG
+
+	# 容器网络/存储
+	set_m OVERLAY_FS
+	set_m FUSE_FS
+	set_m BINFMT_MISC
+	set_m VETH
+	set_m MACVLAN
+	set_m IPVLAN
+	set_m VXLAN
+	set_m DUMMY
+	set_m BRIDGE
+	set_y STP
+	set_y LLC
+	set_y BRIDGE_VLAN_FILTERING
+
+	# nftables：sing-box bridge + Podman/netavark nft 后端
+	set_y NETFILTER_NETLINK
+	set_y NF_TABLES
+	set_y NF_TABLES_INET
+	set_y NF_TABLES_IPV4
+	set_y NF_TABLES_IPV6
+	set_y NF_NAT
+	set_y NF_NAT_MASQUERADE
+	set_y NF_NAT_REDIRECT
+	set_y NFT_NAT
+	set_y NFT_MASQ
+	set_y NFT_REDIR
+	set_y NFT_CT
+	set_y NFT_FLOW_OFFLOAD
+	set_y NF_FLOW_TABLE
+	set_y NF_FLOW_TABLE_INET
+	set_y NFT_REJECT
+	set_y NFT_REJECT_INET
+	set_y NFT_LOG
+	set_y NFT_LIMIT
+	# netavark 的 inet 规则会用到 fib daddr type local；
+	# Y.2 默认会把 FIB 全套砍掉，这里按 docker/full 重新打开。
+	set_m NFT_FIB
+	set_m NFT_FIB_INET
+	set_m NFT_FIB_IPV4
+	set_m NFT_FIB_IPV6
+
+	# 明确不开启：NETFILTER_XTABLES / NFT_COMPAT / IP_NF_* / IP6_NF_* /
+	# BRIDGE_NETFILTER / IP_SET / NETFILTER_XT_*。A/A.2 节保持关闭，
+	# 本段不再重新打开，保持纯 nftables 路线。
 fi
 
 # EFI_PARTITION — GPT 分区表（必须保留！Armbian r3s.csc 使用 GPT）

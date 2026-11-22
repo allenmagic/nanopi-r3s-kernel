@@ -136,9 +136,30 @@ jobs:
           # 模式标志位自检：缺了就说明裁剪结果没进来，宁可构建失败
           case "${{ env.KERNEL_MODE }}" in
             docker|full)
-              for k in MULTIUSER NAMESPACES CGROUP_BPF BPF_SYSCALL; do
-                grep -q "^CONFIG_${k}=y" linux-nanopi-r3s-current.config \
+              # 容器栈 + 纯 nftables（netavark / sing-box bridge）
+              for k in MULTIUSER NAMESPACES CGROUP_BPF BPF_SYSCALL \
+                       NET_NS PID_NS IPC_NS UTS_NS CGROUP_NS USER_NS \
+                       MEMCG CGROUP_PIDS CGROUP_DEVICE CGROUP_SCHED \
+                       FAIR_GROUP_SCHED CFS_BANDWIDTH CPUSETS BLK_CGROUP \
+                       SECCOMP SECCOMP_FILTER KEYS \
+                       VETH BRIDGE OVERLAY_FS VXLAN DUMMY \
+                       NETFILTER_NETLINK NF_TABLES NF_TABLES_INET NF_NAT \
+                       NF_NAT_MASQUERADE NFT_NAT NFT_MASQ NFT_CT \
+                       NFT_FLOW_OFFLOAD NFT_FIB_INET \
+                       IP_MULTIPLE_TABLES IPV6_MULTIPLE_TABLES; do
+                grep -qE "^CONFIG_${k}=(y|m)" linux-nanopi-r3s-current.config \
                   || { echo "错误: ${{ env.KERNEL_MODE }} 模式下 CONFIG_${k} 未启用"; exit 1; }
+              done
+
+              # 纯 nftables 路线：iptables/xtables 必须保持关闭
+              for k in NETFILTER_XTABLES NETFILTER_XTABLES_LEGACY NFT_COMPAT \
+                       IP_NF_IPTABLES IP6_NF_IPTABLES BRIDGE_NETFILTER \
+                       NETFILTER_XT_MARK NETFILTER_XT_NAT NETFILTER_XT_SET \
+                       IP_NF_TARGET_MASQUERADE IP_SET; do
+                if grep -qE "^CONFIG_${k}=[ym]" linux-nanopi-r3s-current.config; then
+                  echo "错误: ${{ env.KERNEL_MODE }} 模式下 CONFIG_${k} 被启用，违反纯 nftables 约束"
+                  exit 1
+                fi
               done
               ;;
           esac
@@ -251,7 +272,10 @@ jobs:
           echo "=== 产物 config: $(basename ${CFG}) ==="
           fail=0
           for k in TUN WIREGUARD NF_TABLES NF_CONNTRACK IPV6 VLAN_8021Q PPP \
-                   NET_SCHED NET_SCH_FQ TCP_CONG_BBR RPS LEDS_TRIGGER_NETDEV; do
+                   IP_MULTIPLE_TABLES IPV6_MULTIPLE_TABLES NETFILTER_NETLINK \
+                   NF_TABLES_INET NF_NAT_MASQUERADE NFT_NAT NFT_MASQ NFT_CT \
+                   NFT_FLOW_OFFLOAD NET_SCHED NET_SCH_FQ TCP_CONG_BBR RPS \
+                   LEDS_TRIGGER_NETDEV; do
             v=$(grep -m1 -oE "^CONFIG_${k}=[ym]" "${CFG}" | cut -d= -f2 || true)
             if [ -n "${v}" ]; then
               echo "  ✓ CONFIG_${k}=${v}"
@@ -261,6 +285,51 @@ jobs:
             fi
           done
           [ "${fail}" -eq 0 ] || { echo "产物缺少核心符号，中止发布" >&2; exit 1; }
+
+      # ----------------------------------------------------------
+      # 4b-2. Docker/Podman + 纯 nftables 闭包（docker/full）
+      #       容器栈必需项 + netavark nft 后端必需的 NFT_FIB_INET；
+      #       同时反向校验：iptables/xtables 必须保持关闭（纯 nftables 路线）。
+      # ----------------------------------------------------------
+      - name: Verify Docker/NFTables closure in built config
+        if: matrix.kernel_mode != 'minimal'
+        run: |
+          CFG=$(ls /tmp/boot-bundle/boot/config-* 2>/dev/null | head -1)
+          [ -n "${CFG}" ] || { echo "错误: 产物中未找到 boot/config-*"; exit 1; }
+
+          echo "=== ${KERNEL_MODE} 模式 Docker / nftables 闭包自检 ==="
+          fail=0
+
+          for k in KEYS VETH BRIDGE BRIDGE_VLAN_FILTERING OVERLAY_FS VXLAN DUMMY \
+                   FUSE_FS BINFMT_MISC PROC_PID_CPUSET BLK_DEV_THROTTLING \
+                   NFT_FIB_INET NETFILTER_NETLINK \
+                   NF_TABLES NF_TABLES_INET NF_NAT NF_NAT_MASQUERADE \
+                   NFT_NAT NFT_MASQ NFT_CT NFT_FLOW_OFFLOAD \
+                   IP_MULTIPLE_TABLES IPV6_MULTIPLE_TABLES; do
+            v=$(grep -m1 -oE "^CONFIG_${k}=[ym]" "${CFG}" | cut -d= -f2 || true)
+            if [ -n "${v}" ]; then
+              echo "  ✓ CONFIG_${k}=${v}"
+            else
+              echo "  ✗ CONFIG_${k} 未启用 —— Docker/nftables 闭包缺失" >&2
+              fail=1
+            fi
+          done
+
+          # 纯 nftables 路线：iptables/xtables 必须保持关闭
+          for k in NETFILTER_XTABLES NETFILTER_XTABLES_LEGACY NFT_COMPAT \
+                   IP_NF_IPTABLES IP6_NF_IPTABLES BRIDGE_NETFILTER \
+                   NETFILTER_XT_MARK NETFILTER_XT_NAT NETFILTER_XT_SET \
+                   NETFILTER_XT_MATCH_ADDRTYPE NETFILTER_XT_MATCH_CONNTRACK \
+                   NETFILTER_XT_MATCH_MARK IP_NF_TARGET_MASQUERADE IP_SET; do
+            if grep -qE "^CONFIG_${k}=[ym]" "${CFG}"; then
+              echo "  ✗ CONFIG_${k} 被启用 —— 违反纯 nftables 约束" >&2
+              fail=1
+            else
+              echo "  ✓ CONFIG_${k} 保持关闭"
+            fi
+          done
+
+          [ "${fail}" -eq 0 ] || { echo "${KERNEL_MODE} 模式 Docker/nftables 闭包不完整，中止发布" >&2; exit 1; }
 
       # ----------------------------------------------------------
       # 4c. eBPF/landscape 闭包自检（仅 full 模式）

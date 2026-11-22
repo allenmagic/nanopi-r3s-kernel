@@ -2,7 +2,7 @@
 
 NanoPi R3S 路由器专用最小化内核配置工具链。
 
-基于 Armbian build framework，从基线 888 项（y/m）按需裁剪至 871~943 项，支持 3 种裁剪模式：纯路由器 / 容器 / 全功能（含 eBPF）。
+基于 Armbian build framework，从基线 888 项（y/m）按需裁剪至 872~956 项，支持 3 种裁剪模式：纯路由器 / 容器（纯 nftables）/ 全功能（容器 + eBPF）。
 
 ## 目录结构
 
@@ -43,13 +43,13 @@ init 随发行版：OpenRC（alpine/gentoo）、systemd（debian）、sysvinit�
 git clone https://github.com/YOURNAME/nanopi-r3s-kernel
 cd nanopi-r3s-kernel
 
-# 默认 minimal 模式（纯路由器，871 y/m，最大裁剪）
+# 默认 minimal 模式（纯路由器，872 y/m，最大裁剪）
 ./trim-r3s-kernel.sh
 
-# 保留容器栈（Docker/Podman，907 y/m）
+# 保留容器栈（Docker/Podman + 纯 nftables，920 y/m）
 ./trim-r3s-kernel.sh --mode docker
 
-# 全功能（docker + eBPF；landscape router / cilium / bpftrace / bcc 用这个，943 y/m）
+# 全功能（docker + eBPF；landscape router / cilium / bpftrace / bcc 用这个，956 y/m）
 ./trim-r3s-kernel.sh --mode full
 
 # 查看帮助
@@ -62,9 +62,11 @@ cd nanopi-r3s-kernel
 
 | 模式 | Docker | eBPF | y/m | 用途 |
 |------|--------|------|-----|------|
-| `minimal` | ✗ | ✗ | 871 | 纯路由器，最大裁剪 |
-| `docker` | ✓ | ✗ | 907 | 在 minimal 之上加容器栈 |
-| `full` | ✓ | ✓ | 943 | 在 docker 之上再加 eBPF/landscape |
+| `minimal` | ✗ | ✗ | 872 | 纯路由器，最大裁剪 |
+| `docker` | ✓ | ✗ | 920 | 在 minimal 之上加容器栈 + 纯 nftables 闭包（无 iptables/xtables） |
+| `full` | ✓ | ✓ | 956 | 在 docker 之上再加 eBPF/landscape |
+
+> `docker` / `full` 的容器网络走 **纯 nftables**：netavark 需要 `NFT_FIB_INET`；内核不启用 `NETFILTER_XTABLES` / `IP_NF_*` / `BRIDGE_NETFILTER`。Podman 需在 `/etc/containers/containers.conf.d/` 里设置 `firewall_driver = "nftables"`；Docker engine 的默认 iptables 后端不在支持范围。
 
 ## 在 Armbian 构建中使用
 
@@ -152,9 +154,9 @@ find /tmp/r3s-uboot -name 'u-boot-rockchip.bin' -exec cp {} /tmp/r3s-uboot/ \;
 
 | 模式 | =y | =m | 合计 | 相对 minimal |
 |------|-----|-----|------|------|
-| `minimal` | 835 | 36 | **871** | 基线 |
-| `docker` | 865 | 42 | **907** | +36（容器栈） |
-| `full` | 899 | 44 | **943** | +72（容器栈 + eBPF/landscape 闭包） |
+| `minimal` | 836 | 36 | **872** | 基线 |
+| `docker` | 871 | 49 | **920** | +48（容器栈 + 纯 nftables 闭包） |
+| `full` | 905 | 51 | **956** | +84（容器栈 + 纯 nftables 闭包 + eBPF/landscape 闭包） |
 
 > 早先版本此处列的是 860/872/894/906，那是另一阶段（olddefconfig 之后）的计数口径，两者不可直接比较。
 
@@ -177,8 +179,11 @@ find /tmp/r3s-uboot -name 'u-boot-rockchip.bin' -exec cp {} /tmp/r3s-uboot/ \;
 - **脚本内联**：关键项在各自小节用 `set_y` 显式确认（`# 红线确认` 注释）防止被联动关闭——
   TUN、WireGuard、nftables、GMAC、RTC(HYM8563)、RK808 PMIC 等。
 - **CI 产物级自检**（真正的闸门）：`.github/workflows/build-kernel.yml` 在编译完成后直接校验
-  `boot/config-*`，不通过即中止发布。查的是 12 个路由器核心符号（TUN/WIREGUARD/NF_TABLES/
-  IPV6/VLAN/PPPoE/BBR/RPS…），以及 full 模式专属的 eBPF/landscape 闭包。
+  `boot/config-*`，不通过即中止发布。查的是路由器核心符号（TUN/WIREGUARD/nftables/
+  policy routing/IPV6/VLAN/PPPoE/BBR/RPS…）、docker/full 模式的容器 + 纯 nftables
+  闭包（正向检查 `NFT_FIB_INET`/`VETH`/`BRIDGE`/`OVERLAY_FS` 等，负向检查
+  `NETFILTER_XTABLES`/`IP_NF_*`/`BRIDGE_NETFILTER` 必须关闭），以及 full 模式
+  专属的 eBPF/landscape 闭包。
 
 之所以必须查产物而不是查脚本输出：扩展钩子在构建期还会改写 `.config`，只看 trim 结果会漏判
 （2026-08-03 就有 12 项在产物里被静默关掉，直到核对 `boot/config-*` 才暴露）。
