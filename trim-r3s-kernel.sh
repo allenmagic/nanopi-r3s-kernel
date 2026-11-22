@@ -2099,7 +2099,6 @@ if [[ $ENABLE_DOCKER -eq 1 ]]; then
 	set_y KEYS
 	set_y SECCOMP
 	set_y SECCOMP_FILTER
-	set_y PROC_PID_CPUSET
 	set_y BLK_DEV_THROTTLING
 	set_y MEMCG
 
