@@ -57,7 +57,7 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 	# 内核 Kconfig select 的依赖项：关了也会被 olddefconfig 重新选回，
 	# 直接列入 keep_set，避免 disable/重新 enable 抖动。
 	local k
-	for k in ELFCORE PCS_XPCS SLHC SCSI_MOD; do
+	for k in ELFCORE PCS_XPCS SLHC SCSI_MOD XPS SOCK_RX_QUEUE_MAPPING DEBUG_KERNEL; do
 		keep_set[$k]=1
 	done
 	if [[ $enable_docker -eq 1 ]]; then
@@ -205,7 +205,6 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 		"KALLSYMS"                     # 内核符号表
 		"PERF_EVENTS"                  # 性能计数器
 		"ELFCORE"                      # core dump
-		"DEBUG_KERNEL"                 # 调试框架门控
 		"POWER_SUPPLY"                 # 电源框架
 		"NETFILTER_FAMILY_BRIDGE"      # bridge netfilter
 		"NETFILTER_FAMILY_ARP"         # ARP netfilter
@@ -218,7 +217,6 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 		"NET_SELFTESTS"                # 网络自测试
 		"NET_RX_BUSY_POLL"             # busy poll
 		"NET_FLOW_LIMIT"               # 流控
-		"SOCK_RX_QUEUE_MAPPING"        # 多队列
 		"LEDS_TRIGGER_CPU"             # CPU LED
 		"LEDS_TRIGGER_ACTIVITY"        # 活动 LED
 		"LEDS_TRIGGER_PANIC"           # Panic LED
@@ -236,11 +234,9 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 	)
 
 	# --- P0/P1 二轮裁剪：Armbian opts_y 重新打开的内置项 ---
-	remove_from_y+=("MD" "BLK_DEV_DM" "XFRM" "XPS" "RFS_ACCEL" "SOCK_RX_QUEUE_MAPPING")
-	# DEBUG_KERNEL 只有 full 模式需要（BTF/CO-RE 的 Debug information choice）
-	if [[ $enable_ebpf -eq 0 ]]; then
-		remove_from_y+=("DEBUG_KERNEL")
-	fi
+	remove_from_y+=("MD" "BLK_DEV_DM" "XFRM" "RFS_ACCEL")
+	# XPS/SOCK_RX_QUEUE_MAPPING 由 default y/select 强制，DEBUG_KERNEL 是调试门控，
+	# 三者均不在此列，统一由 keep_set 保护。
 
 	# eBPF 模式额外要从 opts_y 剔除的项。注意方向与 keep_set 相反：
 	# keep_set 是"别把它关掉"，这里是"别把它强行打开"。
@@ -650,7 +646,6 @@ opts_n+=("CRYPTO_SEQIV")
 opts_n+=("CRYPTO_SHA3")
 opts_n+=("CRYPTO_XXHASH")
 opts_n+=("DEBUG_INFO_NONE")
-opts_n+=("DEBUG_KERNEL")
 opts_n+=("DUMMY")
 opts_n+=("EDAC_SUPPORT")
 opts_n+=("ELFCORE")
@@ -894,7 +889,6 @@ opts_n+=("CPU_FREQ_GOV_ONDEMAND")
 opts_n+=("CPU_IDLE_GOV_MENU")
 opts_n+=("CRYPTO_HW")
 opts_n+=("CRYPTO_SHA3")
-opts_n+=("DEBUG_KERNEL")
 opts_n+=("ELFCORE")
 opts_n+=("GPIOLIB_LEGACY")
 opts_n+=("KALLSYMS")
@@ -937,7 +931,6 @@ opts_n+=("NFT_TPROXY")
 opts_n+=("PERF_EVENTS")
 opts_n+=("POWER_SUPPLY")
 opts_n+=("SERIAL_8250_FSL")
-opts_n+=("SOCK_RX_QUEUE_MAPPING")
 # --- v2.1 Y.4 新增 ---
 opts_n+=("AF_UNIX_OOB")
 opts_n+=("ANON_VMA_NAME")
@@ -946,7 +939,6 @@ opts_n+=("ARM_PMUV3")
 opts_n+=("CONTIG_ALLOC")
 opts_n+=("MIGRATION")
 opts_n+=("SYSCTL_EXCEPTION_TRACE")
-opts_n+=("XPS")
 # --- v2.2 Y.5 新增 ---
 opts_n+=("CRYPTO_JITTERENTROPY")  # select SHA3，不关它 SHA3 关不掉
 opts_n+=("HW_PERF_EVENTS")        # ARM_PMU 已关，perf 硬件计数器残留
@@ -1007,7 +999,7 @@ opts_n+=("MULTIUSER")                 # OpenRC单用户不需
 		"CRYPTO_AES_ARM64" "CRYPTO_AES_ARM64_CE" "CRYPTO_AES_ARM64_CE_BLK"
 		"CRYPTO_LIB_AES" "CRYPTO_LIB_ARC4" "CRYPTO_LIB_GF128MUL"
 		"CRYPTO_LIB_MD5" "CRYPTO_LIB_SHA512"
-		"MD" "BLK_DEV_DM" "XFRM" "XPS" "RFS_ACCEL" "SOCK_RX_QUEUE_MAPPING"
+		"MD" "BLK_DEV_DM" "XFRM" "RFS_ACCEL"
 	)
 
 	# 从 opts_n 中剔除 keep_set 成员（docker/ebpf 模式需要这些项，不能进 opts_n）
