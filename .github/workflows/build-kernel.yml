@@ -146,6 +146,7 @@ jobs:
                        NETFILTER_NETLINK NF_TABLES NF_TABLES_INET NF_NAT \
                        NF_NAT_MASQUERADE NFT_NAT NFT_MASQ NFT_CT \
                        NFT_FLOW_OFFLOAD NFT_FIB_INET \
+                       NFT_QUEUE NETFILTER_NETLINK_QUEUE \
                        IP_MULTIPLE_TABLES IPV6_MULTIPLE_TABLES; do
                 grep -qE "^CONFIG_${k}=(y|m)" linux-nanopi-r3s-current.config \
                   || { echo "错误: ${{ env.KERNEL_MODE }} 模式下 CONFIG_${k} 未启用"; exit 1; }
@@ -275,7 +276,9 @@ jobs:
                    IP_MULTIPLE_TABLES IPV6_MULTIPLE_TABLES NETFILTER_NETLINK \
                    NF_TABLES_INET NF_NAT_MASQUERADE NFT_NAT NFT_MASQ NFT_CT \
                    NFT_FLOW_OFFLOAD NET_SCHED NET_SCH_FQ TCP_CONG_BBR RPS \
-                   LEDS_TRIGGER_NETDEV; do
+                   LEDS_TRIGGER_NETDEV \
+                   CRYPTO_LIB_CURVE25519 CRYPTO_LIB_CHACHA20POLY1305 CRYPTO_LIB_UTILS \
+                   ELFCORE PCS_XPCS SLHC SCSI_MOD; do
             v=$(grep -m1 -oE "^CONFIG_${k}=[ym]" "${CFG}" | cut -d= -f2 || true)
             if [ -n "${v}" ]; then
               echo "  ✓ CONFIG_${k}=${v}"
@@ -302,7 +305,9 @@ jobs:
 
           for k in KEYS VETH BRIDGE BRIDGE_VLAN_FILTERING OVERLAY_FS VXLAN DUMMY \
                    FUSE_FS BINFMT_MISC BLK_DEV_THROTTLING \
+                   EXPORTFS FS_POSIX_ACL BLK_RQ_ALLOC_TIME VM_EVENT_COUNTERS \
                    NFT_FIB_INET NETFILTER_NETLINK \
+                   NFT_QUEUE NETFILTER_NETLINK_QUEUE \
                    NF_TABLES NF_TABLES_INET NF_NAT NF_NAT_MASQUERADE \
                    NFT_NAT NFT_MASQ NFT_CT NFT_FLOW_OFFLOAD \
                    IP_MULTIPLE_TABLES IPV6_MULTIPLE_TABLES; do
@@ -330,6 +335,53 @@ jobs:
           done
 
           [ "${fail}" -eq 0 ] || { echo "${KERNEL_MODE} 模式 Docker/nftables 闭包不完整，中止发布" >&2; exit 1; }
+
+      # ----------------------------------------------------------
+      # 4b-3. P0/P1 二轮裁剪反向校验：这些符号必须是 n
+      #       重点防 Armbian opts_m/opts_y 在 trim 脚本之后重新打开。
+      # ----------------------------------------------------------
+      - name: Verify P0/P1 removals in built config
+        run: |
+          CFG=$(ls /tmp/boot-bundle/boot/config-* 2>/dev/null | head -1)
+          [ -n "${CFG}" ] || { echo "错误: 产物中未找到 boot/config-*"; exit 1; }
+
+          echo "=== ${KERNEL_MODE} 模式 P0/P1 反向自检 ==="
+          fail=0
+          for k in CIFS SMB_SERVER SMBFS F2FS_FS CEPH_FS CEPH_LIB \
+                   BLK_DEV_RBD NETFS_SUPPORT NLS NLS_UTF8 NLS_UCS2_UTILS \
+                   DNS_RESOLVER ASN1 OID_REGISTRY \
+                   IPV6_TUNNEL IPV6_GRE IPV6_VTI IPV6_SIT \
+                   NET_IPGRE NET_IPGRE_DEMUX NET_IPIP INET_TUNNEL INET6_TUNNEL \
+                   GENEVE MACVLAN IPVLAN TCP_CONG_BIC TCP_CONG_HTCP TCP_CONG_WESTWOOD \
+                   DM_CRYPT MD BLK_DEV_DM XFRM XPS RFS_ACCEL SOCK_RX_QUEUE_MAPPING \
+                   CRYPTO CRYPTO_ALGAPI CRYPTO_ALGAPI2 CRYPTO_AEAD CRYPTO_AEAD2 \
+                   CRYPTO_SIG2 CRYPTO_SKCIPHER CRYPTO_SKCIPHER2 CRYPTO_HASH CRYPTO_HASH2 \
+                   CRYPTO_RNG CRYPTO_RNG2 CRYPTO_AKCIPHER2 CRYPTO_KPP2 CRYPTO_ACOMP2 \
+                   CRYPTO_MANAGER CRYPTO_MANAGER2 CRYPTO_AUTHENC CRYPTO_AES \
+                   CRYPTO_CBC CRYPTO_CTR CRYPTO_ECB CRYPTO_XTS CRYPTO_CCM CRYPTO_GCM \
+                   CRYPTO_ESSIV CRYPTO_CMAC CRYPTO_GHASH CRYPTO_HMAC \
+                   CRYPTO_SHA256 CRYPTO_SHA512 CRYPTO_SHA3 \
+                   CRYPTO_DRBG_MENU CRYPTO_DRBG CRYPTO_JITTERENTROPY \
+                   CRYPTO_AES_ARM64 CRYPTO_AES_ARM64_CE CRYPTO_AES_ARM64_CE_BLK \
+                   CRYPTO_LIB_AES CRYPTO_LIB_ARC4 CRYPTO_LIB_GF128MUL \
+                   CRYPTO_LIB_MD5 CRYPTO_LIB_SHA512; do
+            if grep -qE "^CONFIG_${k}=[ym]" "${CFG}"; then
+              echo "  ✗ CONFIG_${k} 仍被启用 —— P0/P1 裁剪未生效" >&2
+              fail=1
+            else
+              echo "  ✓ CONFIG_${k} 已关闭"
+            fi
+          done
+
+          # DEBUG_KERNEL 只有 full 模式需要（BTF/CO-RE）
+          if [ "${KERNEL_MODE}" != "full" ] && grep -qE '^CONFIG_DEBUG_KERNEL=[ym]' "${CFG}"; then
+            echo "  ✗ CONFIG_DEBUG_KERNEL 在 ${KERNEL_MODE} 模式下仍被启用" >&2
+            fail=1
+          elif [ "${KERNEL_MODE}" != "full" ]; then
+            echo "  ✓ CONFIG_DEBUG_KERNEL 已关闭"
+          fi
+
+          [ "${fail}" -eq 0 ] || { echo "${KERNEL_MODE} 模式 P0/P1 裁剪不完整，中止发布" >&2; exit 1; }
 
       # ----------------------------------------------------------
       # 4c. eBPF/landscape 闭包自检（仅 full 模式）
