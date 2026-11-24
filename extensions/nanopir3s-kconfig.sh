@@ -54,8 +54,13 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 
 	# keep_set：本模式下必须保留、严禁被钩子关闭的符号（含依赖闭包）
 	local -A keep_set=()
+	# 内核 Kconfig select 的依赖项：关了也会被 olddefconfig 重新选回，
+	# 直接列入 keep_set，避免 disable/重新 enable 抖动。
+	local k
+	for k in ELFCORE PCS_XPCS SLHC SCSI_MOD; do
+		keep_set[$k]=1
+	done
 	if [[ $enable_docker -eq 1 ]]; then
-		local k
 		for k in \
 			MULTIUSER NAMESPACES UTS_NS IPC_NS PID_NS NET_NS CGROUP_NS TIME_NS USER_NS \
 			POSIX_MQUEUE POSIX_MQUEUE_SYSCTL \
@@ -70,10 +75,11 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 			SECCOMP SECCOMP_FILTER KEYS \
 			BINFMT_MISC \
 			BRIDGE BRIDGE_VLAN_FILTERING STP LLC \
-			VETH MACVLAN IPVLAN IPVLAN_L3S NET_L3_MASTER_DEV \
+			VETH \
 			VXLAN DUMMY FUSE_FS \
+			EXPORTFS FS_POSIX_ACL BLK_RQ_ALLOC_TIME VM_EVENT_COUNTERS \
 			OVERLAY_FS FS_STACK \
-			NETFILTER_NETLINK \
+			NETFILTER_NETLINK NETFILTER_NETLINK_QUEUE NFT_QUEUE \
 			NFT_FIB NFT_FIB_INET NFT_FIB_IPV4 NFT_FIB_IPV6; do
 			keep_set[$k]=1
 		done
@@ -228,6 +234,13 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 		"ZRAM_BACKEND_ZSTD"            # ZSTD backend（opts_y 注入）
 		"EXT4_FS_POSIX_ACL"            # ext4 ACL（opts_y 注入）
 	)
+
+	# --- P0/P1 二轮裁剪：Armbian opts_y 重新打开的内置项 ---
+	remove_from_y+=("MD" "BLK_DEV_DM" "XFRM" "XPS" "RFS_ACCEL" "SOCK_RX_QUEUE_MAPPING")
+	# DEBUG_KERNEL 只有 full 模式需要（BTF/CO-RE 的 Debug information choice）
+	if [[ $enable_ebpf -eq 0 ]]; then
+		remove_from_y+=("DEBUG_KERNEL")
+	fi
 
 	# eBPF 模式额外要从 opts_y 剔除的项。注意方向与 keep_set 相反：
 	# keep_set 是"别把它关掉"，这里是"别把它强行打开"。
@@ -400,6 +413,30 @@ function custom_kernel_config__nanopir3s_undo_armbian_ebpf_injections() {
 		"NF_DUP_NETDEV" "NF_DUP_IPV4" "NF_DUP_IPV6" "NFT_DUP_IPV4" "NFT_DUP_IPV6"
 		"NF_TABLES_BRIDGE" "NET_IP_TUNNEL"
 		"DUMMY"                        # v2.4: dummy 虚拟网卡（opts_m 注入）
+	)
+
+	# --- P0/P1 二轮裁剪：无用模块（Armbian opts_m 会重新打开）---
+	remove_from_m+=(
+		"CIFS" "SMB_SERVER" "SMBFS" "F2FS_FS" "CEPH_FS" "CEPH_LIB"
+		"BLK_DEV_RBD" "NETFS_SUPPORT" "NLS" "NLS_UTF8" "NLS_UCS2_UTILS"
+		"DNS_RESOLVER" "ASN1" "OID_REGISTRY"
+		"IPV6_TUNNEL" "IPV6_GRE" "IPV6_VTI" "IPV6_SIT"
+		"NET_IPGRE" "NET_IPGRE_DEMUX" "NET_IPIP" "INET_TUNNEL" "INET6_TUNNEL"
+		"GENEVE" "MACVLAN" "IPVLAN"
+		"TCP_CONG_BIC" "TCP_CONG_HTCP" "TCP_CONG_WESTWOOD"
+		"DM_CRYPT"
+		"CRYPTO" "CRYPTO_ALGAPI" "CRYPTO_ALGAPI2" "CRYPTO_AEAD" "CRYPTO_AEAD2"
+		"CRYPTO_SIG2" "CRYPTO_SKCIPHER" "CRYPTO_SKCIPHER2"
+		"CRYPTO_HASH" "CRYPTO_HASH2" "CRYPTO_RNG" "CRYPTO_RNG2"
+		"CRYPTO_AKCIPHER2" "CRYPTO_KPP2" "CRYPTO_ACOMP2"
+		"CRYPTO_MANAGER" "CRYPTO_MANAGER2" "CRYPTO_AUTHENC" "CRYPTO_AES"
+		"CRYPTO_CBC" "CRYPTO_CTR" "CRYPTO_ECB" "CRYPTO_XTS" "CRYPTO_CCM"
+		"CRYPTO_GCM" "CRYPTO_ESSIV" "CRYPTO_CMAC" "CRYPTO_GHASH" "CRYPTO_HMAC"
+		"CRYPTO_SHA256" "CRYPTO_SHA512" "CRYPTO_SHA3"
+		"CRYPTO_DRBG_MENU" "CRYPTO_DRBG" "CRYPTO_JITTERENTROPY"
+		"CRYPTO_AES_ARM64" "CRYPTO_AES_ARM64_CE" "CRYPTO_AES_ARM64_CE_BLK"
+		"CRYPTO_LIB_AES" "CRYPTO_LIB_ARC4" "CRYPTO_LIB_GF128MUL"
+		"CRYPTO_LIB_MD5" "CRYPTO_LIB_SHA512"
 	)
 
 	# --- 路由器核心模块（config 已 =y，防止 Armbian opts_m 覆盖降级）---
@@ -791,6 +828,7 @@ opts_n+=("NFT_FIB_NETDEV")
 opts_n+=("NFT_FWD_NETDEV")
 opts_n+=("NFT_NUMGEN")
 opts_n+=("NFT_OSF")
+opts_n+=("NETFILTER_NETLINK_QUEUE")
 opts_n+=("NFT_QUEUE")
 opts_n+=("NFT_REJECT_NETDEV")
 opts_n+=("NFT_SYNPROXY")
@@ -946,6 +984,31 @@ opts_n+=("RELOCATABLE")               # RANDOMIZE_BASE stop 后的级联
 opts_n+=("VDSO_GETRANDOM")            # 纯性能，禁后走syscall
 opts_n+=("MULTIUSER")                 # OpenRC单用户不需
 	opts_y+=("PREEMPT_VOLUNTARY")
+
+	# --- P0/P1 二轮裁剪：模块 + 内置项 ---
+	opts_n+=(
+		"CIFS" "SMB_SERVER" "SMBFS" "F2FS_FS" "CEPH_FS" "CEPH_LIB"
+		"BLK_DEV_RBD" "NETFS_SUPPORT" "NLS" "NLS_UTF8" "NLS_UCS2_UTILS"
+		"DNS_RESOLVER" "ASN1" "OID_REGISTRY"
+		"IPV6_TUNNEL" "IPV6_GRE" "IPV6_VTI" "IPV6_SIT"
+		"NET_IPGRE" "NET_IPGRE_DEMUX" "NET_IPIP" "INET_TUNNEL" "INET6_TUNNEL"
+		"GENEVE" "MACVLAN" "IPVLAN"
+		"TCP_CONG_BIC" "TCP_CONG_HTCP" "TCP_CONG_WESTWOOD"
+		"DM_CRYPT"
+		"CRYPTO" "CRYPTO_ALGAPI" "CRYPTO_ALGAPI2" "CRYPTO_AEAD" "CRYPTO_AEAD2"
+		"CRYPTO_SIG2" "CRYPTO_SKCIPHER" "CRYPTO_SKCIPHER2"
+		"CRYPTO_HASH" "CRYPTO_HASH2" "CRYPTO_RNG" "CRYPTO_RNG2"
+		"CRYPTO_AKCIPHER2" "CRYPTO_KPP2" "CRYPTO_ACOMP2"
+		"CRYPTO_MANAGER" "CRYPTO_MANAGER2" "CRYPTO_AUTHENC" "CRYPTO_AES"
+		"CRYPTO_CBC" "CRYPTO_CTR" "CRYPTO_ECB" "CRYPTO_XTS" "CRYPTO_CCM"
+		"CRYPTO_GCM" "CRYPTO_ESSIV" "CRYPTO_CMAC" "CRYPTO_GHASH" "CRYPTO_HMAC"
+		"CRYPTO_SHA256" "CRYPTO_SHA512" "CRYPTO_SHA3"
+		"CRYPTO_DRBG_MENU" "CRYPTO_DRBG" "CRYPTO_JITTERENTROPY"
+		"CRYPTO_AES_ARM64" "CRYPTO_AES_ARM64_CE" "CRYPTO_AES_ARM64_CE_BLK"
+		"CRYPTO_LIB_AES" "CRYPTO_LIB_ARC4" "CRYPTO_LIB_GF128MUL"
+		"CRYPTO_LIB_MD5" "CRYPTO_LIB_SHA512"
+		"MD" "BLK_DEV_DM" "XFRM" "XPS" "RFS_ACCEL" "SOCK_RX_QUEUE_MAPPING"
+	)
 
 	# 从 opts_n 中剔除 keep_set 成员（docker/ebpf 模式需要这些项，不能进 opts_n）
 	if [[ ${#keep_set[@]} -gt 0 ]]; then

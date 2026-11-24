@@ -442,9 +442,10 @@ unset_k NF_CT_NETLINK_TIMEOUT
 unset_k NF_CT_NETLINK_HELPER
 
 # =============================================================================
-# H.2 冷门 netfilter 模块清除（SYNPROXY/CONNCOUNT/NFT_QUEUE/NFT_TUNNEL 等）
+# H.2 冷门 netfilter 模块清除（SYNPROXY/CONNCOUNT/NFT_TUNNEL 等）
+#     NFQUEUE 不在此列：sing-box 的 bridge outbound 需要 nft_queue/nfnetlink_queue
 # =============================================================================
-info "[H.2] 冷门 netfilter 模块清除 (~16 项)"
+info "[H.2] 冷门 netfilter 模块清除 (~14 项；docker/full 保留 NFQUEUE)"
 
 	# SYN proxy（无对外 TCP 服务，不需要）
 	unset_k NETFILTER_SYNPROXY
@@ -454,9 +455,11 @@ info "[H.2] 冷门 netfilter 模块清除 (~16 项)"
 	unset_k NETFILTER_CONNCOUNT
 	unset_k NFT_CONNLIMIT
 
-	# NFQUEUE（用户态排队，sing-box 不用）
-	unset_k NETFILTER_NETLINK_QUEUE
-	unset_k NFT_QUEUE
+	# NFQUEUE：sing-box 的 bridge outbound 需要；docker/full 保留 =m
+	if [[ $ENABLE_DOCKER -eq 0 ]]; then
+		unset_k NETFILTER_NETLINK_QUEUE
+		unset_k NFT_QUEUE
+	fi
 
 	# Bridge conntrack（无 bridge 过滤需求）
 	unset_k NF_CONNTRACK_BRIDGE
@@ -2107,8 +2110,6 @@ if [[ $ENABLE_DOCKER -eq 1 ]]; then
 	set_m FUSE_FS
 	set_m BINFMT_MISC
 	set_m VETH
-	set_m MACVLAN
-	set_m IPVLAN
 	set_m VXLAN
 	set_m DUMMY
 	set_m BRIDGE
@@ -2118,6 +2119,8 @@ if [[ $ENABLE_DOCKER -eq 1 ]]; then
 
 	# nftables：sing-box bridge + Podman/netavark nft 后端
 	set_y NETFILTER_NETLINK
+	set_m NETFILTER_NETLINK_QUEUE   # nfnetlink_queue.ko（NFT_QUEUE 依赖）
+	set_m NFT_QUEUE                 # sing-box bridge outbound 的 NFQUEUE 路径
 	set_y NF_TABLES
 	set_y NF_TABLES_INET
 	set_y NF_TABLES_IPV4
@@ -2305,7 +2308,47 @@ unset_k STRICT_DEVMEM             # /dev/mem 写保护（生产建议保留 ⚠�
 set_y STRICT_DEVMEM
 set_y IO_STRICT_DEVMEM
 
+# =============================================================================
+# P0/P1 二轮裁剪：无用文件系统 / 隧道 / crypto / MD-DM-XFRM 等
+#   这些项会被 Armbian opts_m/opts_y 重新打开，除了本脚本 unset，还必须同步
+#   extensions/nanopir3s-kconfig.sh 的 remove_from_m/remove_from_y，
+#   并由 CI 在最终 boot/config-* 上做反向校验。
+#   保留：FUSE_FS / BINFMT_MISC / EXPORTFS / FS_POSIX_ACL / ELFCORE /
+#         PCS_XPCS / SLHC / SCSI_MOD / BLK_RQ_ALLOC_TIME /
+#         VM_EVENT_COUNTERS / NFT_QUEUE / NETFILTER_NETLINK_QUEUE。
+# =============================================================================
+info "[P0/P1] 二轮裁剪：无用模块 / crypto / MD-DM-XFRM"
 
+p0p1_disable=(
+	# 文件系统 / 网络文件系统
+	CIFS SMB_SERVER SMBFS F2FS_FS CEPH_FS CEPH_LIB
+	BLK_DEV_RBD NETFS_SUPPORT NLS NLS_UTF8 NLS_UCS2_UTILS
+	DNS_RESOLVER ASN1 OID_REGISTRY
+	# 隧道 / 容器额外网络 / 拥塞控制
+	IPV6_TUNNEL IPV6_GRE IPV6_VTI IPV6_SIT
+	NET_IPGRE NET_IPGRE_DEMUX NET_IPIP INET_TUNNEL INET6_TUNNEL
+	GENEVE MACVLAN IPVLAN
+	TCP_CONG_BIC TCP_CONG_HTCP TCP_CONG_WESTWOOD
+	# 块设备
+	DM_CRYPT
+	# crypto API / 算法（WireGuard 的 CRYPTO_LIB_CURVE25519 等保持不动）
+	CRYPTO CRYPTO_ALGAPI CRYPTO_ALGAPI2 CRYPTO_AEAD CRYPTO_AEAD2
+	CRYPTO_SIG2 CRYPTO_SKCIPHER CRYPTO_SKCIPHER2 CRYPTO_HASH CRYPTO_HASH2
+	CRYPTO_RNG CRYPTO_RNG2 CRYPTO_AKCIPHER2 CRYPTO_KPP2 CRYPTO_ACOMP2
+	CRYPTO_MANAGER CRYPTO_MANAGER2 CRYPTO_AUTHENC CRYPTO_AES
+	CRYPTO_CBC CRYPTO_CTR CRYPTO_ECB CRYPTO_XTS CRYPTO_CCM CRYPTO_GCM
+	CRYPTO_ESSIV CRYPTO_CMAC CRYPTO_GHASH CRYPTO_HMAC
+	CRYPTO_SHA256 CRYPTO_SHA512 CRYPTO_SHA3
+	CRYPTO_DRBG_MENU CRYPTO_DRBG CRYPTO_JITTERENTROPY
+	CRYPTO_AES_ARM64 CRYPTO_AES_ARM64_CE CRYPTO_AES_ARM64_CE_BLK
+	CRYPTO_LIB_AES CRYPTO_LIB_ARC4 CRYPTO_LIB_GF128MUL
+	CRYPTO_LIB_MD5 CRYPTO_LIB_SHA512
+	# 内置（opts_y 会重新打开）
+	MD BLK_DEV_DM XFRM XPS RFS_ACCEL SOCK_RX_QUEUE_MAPPING
+)
+for k in "${p0p1_disable[@]}"; do
+	unset_k "$k"
+done
 
 # =============================================================================
 # 完成
