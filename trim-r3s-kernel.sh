@@ -1847,7 +1847,6 @@ unset_k NET_UDP_TUNNEL
 unset_k NET_SELFTESTS
 unset_k NET_RX_BUSY_POLL
 unset_k NET_FLOW_LIMIT
-unset_k SOCK_RX_QUEUE_MAPPING
 
 # =============================================================================
 # Y.3 内核框架瘦身（无容器/无调试场景）
@@ -1861,15 +1860,10 @@ else
 	set_y MEMCG                  # docker -m / --memory 必需
 fi
 
-# DEBUG_KERNEL — 调试框架门控（生产关闭）
-# ⚠️ 但 "Debug information" choice 是 `depends on DEBUG_KERNEL` 的：eBPF 模式要 BTF
-#    就必须留住它，否则 choice 整个不可见 → DEBUG_INFO 恒 n → DEBUG_INFO_BTF 拿不到。
-#    具体调试项由上面那一长串 unset_k 逐个关掉，开这个门控本身不带来代码。
-if [[ $ENABLE_EBPF -eq 1 ]]; then
-	set_y DEBUG_KERNEL
-else
-	unset_k DEBUG_KERNEL
-fi
+# DEBUG_KERNEL — 调试框架门控；具体调试项已逐个关闭，门控本身不带来代码。
+# docker/minimal 下也会被 DEBUG_INFO_NONE / debug choice 强制拉回 y，
+# 这里统一 set_y，避免 config 与最终产物不一致。
+set_y DEBUG_KERNEL
 
 # POWER_SUPPLY — 电源框架（R3S 无电池）
 unset_k POWER_SUPPLY
@@ -1912,9 +1906,9 @@ else
 fi
 
 # 软件 RPS 保留：SoC GMAC 是多队列（实测 qdisc mq），sysctl 设
-# net.ipv4.rps_sock_flow_entries 依赖它；XPS 仍砍（多队列发送侧收益小）
+# net.ipv4.rps_sock_flow_entries 依赖它；XPS/SOCK_RX_QUEUE_MAPPING
+# 是内核 default y + select 的隐藏项，会被 olddefconfig 拉回，保留。
 set_y RPS
-unset_k XPS
 
 # POSIX ACL（单用户路由器不需要文件 ACL）
 unset_k FS_POSIX_ACL
@@ -2343,8 +2337,9 @@ p0p1_disable=(
 	CRYPTO_AES_ARM64 CRYPTO_AES_ARM64_CE CRYPTO_AES_ARM64_CE_BLK
 	CRYPTO_LIB_AES CRYPTO_LIB_ARC4 CRYPTO_LIB_GF128MUL
 	CRYPTO_LIB_MD5 CRYPTO_LIB_SHA512
-	# 内置（opts_y 会重新打开）
-	MD BLK_DEV_DM XFRM XPS RFS_ACCEL SOCK_RX_QUEUE_MAPPING
+	# 内置（opts_y 会重新打开）；XPS/SOCK_RX_QUEUE_MAPPING/DEBUG_KERNEL
+	# 由内核 default y/select 强制保留，不在此列
+	MD BLK_DEV_DM XFRM RFS_ACCEL
 )
 for k in "${p0p1_disable[@]}"; do
 	unset_k "$k"

@@ -48,9 +48,9 @@ Requires root/sudo. Host: Ubuntu 24.04 / Armbian, or any Docker-capable Linux fo
 
 | 模式 | Docker | eBPF | 脚本产物 y/m 合计 | 用途 |
 |------|--------|------|--------------|------|
-| `minimal`（默认） | ✗ | ✗ | 845 | 纯路由器，最大裁剪 |
-| `docker` | ✓ | ✗ | 892 | 在 minimal 之上加容器栈 + 纯 nftables 闭包（无 iptables/xtables） |
-| `full` | ✓ | ✓ | 928 | 在 docker 之上再加 eBPF/landscape |
+| `minimal`（默认） | ✗ | ✗ | 848 | 纯路由器，最大裁剪 |
+| `docker` | ✓ | ✗ | 895 | 在 minimal 之上加容器栈 + 纯 nftables 闭包（无 iptables/xtables） |
+| `full` | ✓ | ✓ | 930 | 在 docker 之上再加 eBPF/landscape |
 
 实现要点（脚本内用 `ENABLE_DOCKER` / `ENABLE_EBPF` 两个标志包裹原裁剪块）：
 - **docker** 在 docker 模式恢复：`MULTIUSER`+全套 namespaces、`USER_NS`、`MEMCG`、`CPUSETS`、`CGROUP_*` controllers、`CGROUP_SCHED`+`FAIR_GROUP_SCHED`+`CFS_BANDWIDTH`、`BLK_CGROUP` 全链、`OVERLAY_FS`/`VETH`/`MACVLAN`/`IPVLAN`/`BRIDGE`(=m)、`BINFMT_MISC`。注意 H1 节原本无条件再砍 `BRIDGE`，已加 docker 守卫；`FREEZER` 同理（由 `CGROUP_FREEZER` select）。
@@ -61,7 +61,7 @@ Requires root/sudo. Host: Ubuntu 24.04 / Armbian, or any Docker-capable Linux fo
 
 **容器网络是纯 nftables 路线**：docker/full 模式**有意不开启** `NETFILTER_XTABLES` / `NFT_COMPAT` / `IP_NF_*` / `IP6_NF_*` / `BRIDGE_NETFILTER` / `IP_SET` / `NETFILTER_XT_*`。Podman 必须把 netavark 固定到 nftables 后端（`/etc/containers/containers.conf.d/*.conf` 里 `firewall_driver = "nftables"`）；docker/full 模式额外保留 `NFT_FIB_INET`（netavark 的 `fib daddr type local` 规则需要）和 `NFT_QUEUE` + `NETFILTER_NETLINK_QUEUE`（sing-box bridge outbound 的 NFQUEUE 路径需要，两者均为 `=m`）。**Docker engine 的默认 iptables 后端不在支持范围**。容器/eBPF 的依赖闭包由 CI 在真实产物 `boot/config-*` 上双向校验（正向检查容器/nftables 符号，负向检查 iptables/xtables 必须关闭）。
 
-**P0/P1 二轮裁剪（2026-11-24）**：删除 CIFS/SMB_SERVER/SMBFS/F2FS/CEPH/RBD/NETFS/NLS、IPv6/IPv4 隧道、GENEVE/MACVLAN/IPVLAN、TCP_CONG_*、DM_CRYPT、整个 crypto API（`CRYPTO*`）模块；内置项去掉 `MD`/`BLK_DEV_DM`/`XFRM`/`XPS`/`RFS_ACCEL`/`SOCK_RX_QUEUE_MAPPING`。保留 `FUSE_FS`、`BINFMT_MISC`、`EXPORTFS`、`FS_POSIX_ACL`、`ELFCORE`、`PCS_XPCS`、`SLHC`、`SCSI_MOD`、`BLK_RQ_ALLOC_TIME`、`VM_EVENT_COUNTERS`、`NFT_QUEUE`/`NETFILTER_NETLINK_QUEUE`。CI 在最终 `boot/config-*` 上增加反向校验：上述删除项必须为 n，防止 Armbian `opts_m/opts_y` 重新打开。
+**P0/P1 二轮裁剪（2026-11-24）**：删除 CIFS/SMB_SERVER/SMBFS/F2FS/CEPH/RBD/NETFS/NLS、IPv6/IPv4 隧道、GENEVE/MACVLAN/IPVLAN、TCP_CONG_*、DM_CRYPT、整个 crypto API（`CRYPTO*`）模块；内置项去掉 `MD`/`BLK_DEV_DM`/`XFRM`/`RFS_ACCEL`。保留 `FUSE_FS`、`BINFMT_MISC`、`EXPORTFS`、`FS_POSIX_ACL`、`ELFCORE`、`PCS_XPCS`、`SLHC`、`SCSI_MOD`、`BLK_RQ_ALLOC_TIME`、`VM_EVENT_COUNTERS`、`NFT_QUEUE`/`NETFILTER_NETLINK_QUEUE`；`XPS`/`SOCK_RX_QUEUE_MAPPING`/`DEBUG_KERNEL` 是内核 `default y`/`select`/调试门控，强制保留，不纳入删除和反向检查。CI 在最终 `boot/config-*` 上对删除项做反向校验，防止 Armbian `opts_m/opts_y` 重新打开。
 
 **注意**：仓库里 commit 的 `kernel/rockchip64-current/linux-rockchip64-current.config` 是 2026-08-03 生成的旧产物，与当前脚本输出已有漂移（`NET_SCHED`、`TCP_CONG_BBR`、`R8169` 等约 15 处）。要构建哪个模式就重跑对应 `--mode` 覆盖它。
 
@@ -173,7 +173,7 @@ When editing trimming logic: the red-line lists encode hard requirements for the
 - **模式收敛为三种**：删掉独立的 `ebpf` 模式，只留 `minimal` / `docker` / `full`（`full` = 原 `ebpf` + docker）。脚本里 `--mode ebpf` 现在直接报错；钩子遇到遗留的 `R3S_TRIM_MODE=ebpf` 会告警并**按 full 处理**（而不是退回 minimal——静默丢掉 eBPF 栈的后果更难发现）。CI matrix 同步改为三种。
 - **有意偏离指南**：`NETFILTER_XT_MATCH_BPF` 未开。它依赖 `NETFILTER_XTABLES`，而 `IP_NF_*`/`IP6_NF_*` 已全砍 —— 没有 iptables 链可挂，开了也是死模块；landscape 数据面与 iptables 无关。已在 A 节注释说明。
 - **扩展钩子**：eBPF 栈的 keep_set 扩到 46 项闭包（新增 tc 框架、tracing 栈含 FTRACE、PMU、SECURITY/SYSFS/MULTIUSER、DEBUG_KERNEL/DEBUG_INFO_DWARF5 等），并**移除** `BPF_JIT_ALWAYS_ON`（要让 opts_n 把它压成 n）。
-- 计数（三模式）：minimal **845**、docker **892**、full **928**（2026-11-22 容器 + 纯 nftables 闭包；2026-11-24 补回 sing-box bridge 需要的 `NFT_QUEUE`/`NETFILTER_NETLINK_QUEUE`，并完成 P0/P1 二轮裁剪）。
+- 计数（三模式）：minimal **848**、docker **895**、full **930**（2026-11-22 容器 + 纯 nftables 闭包；2026-11-24 补回 sing-box bridge 需要的 `NFT_QUEUE`/`NETFILTER_NETLINK_QUEUE`，并完成 P0/P1 二轮裁剪）。
 - **未验证**：闭包参照 mainline v6.18 Kconfig 逐条核对（含 `if FTRACE` 这类纯文本包裹关系），但**未跑 olddefconfig / 实机编译**（缺解包内核源码）；`DEBUG_INFO_BTF` 还依赖构建机 **pahole ≥1.21**。首次构建后须核对产物。
 - **残留风险**：`opts_m` 在 `opts_y` 之后施加，若 Armbian 的 `opts_m` 里含本闭包中"必须 =y"的 bool 符号，会被降级成 `=m`（对 bool 非法）。既有 docker 模式用同一套 keep_set 未暴露此问题，推测这些符号不在 opts_m；若构建日志出现 `symbol value 'm' invalid` 报错，把对应符号按现有 `keep_y` 写法加进"只从 opts_m 剔除"的名单即可。
 

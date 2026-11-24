@@ -353,7 +353,7 @@ jobs:
                    IPV6_TUNNEL IPV6_GRE IPV6_VTI IPV6_SIT \
                    NET_IPGRE NET_IPGRE_DEMUX NET_IPIP INET_TUNNEL INET6_TUNNEL \
                    GENEVE MACVLAN IPVLAN TCP_CONG_BIC TCP_CONG_HTCP TCP_CONG_WESTWOOD \
-                   DM_CRYPT MD BLK_DEV_DM XFRM XPS RFS_ACCEL SOCK_RX_QUEUE_MAPPING \
+                   DM_CRYPT MD BLK_DEV_DM XFRM RFS_ACCEL \
                    CRYPTO CRYPTO_ALGAPI CRYPTO_ALGAPI2 CRYPTO_AEAD CRYPTO_AEAD2 \
                    CRYPTO_SIG2 CRYPTO_SKCIPHER CRYPTO_SKCIPHER2 CRYPTO_HASH CRYPTO_HASH2 \
                    CRYPTO_RNG CRYPTO_RNG2 CRYPTO_AKCIPHER2 CRYPTO_KPP2 CRYPTO_ACOMP2 \
@@ -373,13 +373,7 @@ jobs:
             fi
           done
 
-          # DEBUG_KERNEL 只有 full 模式需要（BTF/CO-RE）
-          if [ "${KERNEL_MODE}" != "full" ] && grep -qE '^CONFIG_DEBUG_KERNEL=[ym]' "${CFG}"; then
-            echo "  ✗ CONFIG_DEBUG_KERNEL 在 ${KERNEL_MODE} 模式下仍被启用" >&2
-            fail=1
-          elif [ "${KERNEL_MODE}" != "full" ]; then
-            echo "  ✓ CONFIG_DEBUG_KERNEL 已关闭"
-          fi
+          # DEBUG_KERNEL / XPS / SOCK_RX_QUEUE_MAPPING 属于内核门控/强制项，不纳入本检查。
 
           [ "${fail}" -eq 0 ] || { echo "${KERNEL_MODE} 模式 P0/P1 裁剪不完整，中止发布" >&2; exit 1; }
 
